@@ -1,0 +1,41 @@
+{
+  "entities": {
+    "settings": {
+      "title": "settings",
+      "description": "Global site settings",
+      "fields": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "votingActive": { "type": "boolean" },
+        "allowMultipleSelection": { "type": "boolean" },
+        "requireAllRoles": { "type": "boolean" }
+      }
+    },
+    "admin": {
+      "title": "admin",
+      "description": "Admin configuration and password hash",
+      "fields": {
+        "passwordHash": { "type": "string" }
+      }
+    },
+    "candidates": {
+      "title": "candidates",
+      "description": "Candidate profiles for voting",
+      "fields": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "roleId": { "type": "string" }
+      }
+    },
+    "votes": {
+      "title": "votes",
+      "description": "Recorded votes",
+      "fields": {
+        "id": { "type": "string" },
+        "voterFullName": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "selections": { "type": "map" }
+      }
+    }
+  }
+}

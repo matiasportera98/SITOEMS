@@ -1,0 +1,13 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+# Runtime JSON storage & log files
+access_logs.json
+db.json
+discord_registered_users.json
+

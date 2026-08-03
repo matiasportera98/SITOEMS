@@ -1,0 +1,6 @@
+{
+  "name": "Sito di Votazione Ruoli",
+  "description": "Piattaforma per la votazione interna, portale candidature e gestione gerarchica EMS su Emerals RP 4.0.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

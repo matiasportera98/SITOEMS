@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* ----------------------------------------------------
+   GLOBAL DARK CUSTOM SCROLLBARS (Clean, Modern, No Arrows)
+   ---------------------------------------------------- */
+
+/* Firefox standard scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #33333e #0d0d12;
+}
+
+/* WebKit (Chrome, Safari, Edge, Opera) custom scrollbars */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #0d0d12;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #2a2a36;
+  border-radius: 9999px;
+  border: 2px solid #0d0d12;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #404052;
+}
+
+/* Hide scrollbar arrow buttons on all elements */
+::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+::-webkit-scrollbar-corner {
+  background: #0d0d12;
+}
+
+/* Subtle overlay scrollbars for modals, dropdowns, and lists */
+.custom-scrollbar,
+.dark-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.2) transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar,
+.dark-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track,
+.dark-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb,
+.dark-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 9999px;
+  border: none;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover,
+.dark-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.custom-scrollbar::-webkit-scrollbar-button,
+.dark-scrollbar::-webkit-scrollbar-button {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+.custom-scrollbar::-webkit-scrollbar-corner,
+.dark-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+html, body, #root {
+  width: 100%;
+  max-width: 100vw;
+  overflow-x: hidden !important;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: #0c0102;
+  color: #f1f5f9;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Ensure no element causes horizontal scroll on mobile screens */
+@media (max-width: 640px) {
+  * {
+    max-width: 100vw;
+  }
+  
+  /* Tables and wide data grids wrap smoothly in horizontal scroll containers */
+  table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
