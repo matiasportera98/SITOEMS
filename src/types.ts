@@ -37,6 +37,14 @@ export interface SiteSettings {
   candidatureEnabled?: boolean;
 }
 
+export interface GameScore {
+  id: string;
+  name: string;
+  score: number;
+  level: number;
+  date: string;
+}
+
 export interface RoleConfig {
   id: RoleId;
   name: string;
@@ -201,6 +209,8 @@ const ROLE_GRADE_MAP: Record<string, number> = {
   "soccorritore": 3,
   "tirocinante": 2,
   "allievo": 2,
+  "volontario": 1.5,
+  "volontaria": 1.5,
   "dipendente": 1,
 };
 
@@ -245,7 +255,10 @@ export function getSingleRoleGrade(roleName?: string): number {
 
 export function getUserEffectiveGrade(u: { roleName?: string; cdaRoleName?: string; token?: string; isMaster?: boolean }): number {
   if (u.isMaster) return 100;
-  return getSingleRoleGrade(u.roleName);
+  const clean = (u.roleName || "").trim().toLowerCase();
+  if (clean.includes("proprietario") || clean.includes("master")) return 100;
+  const grade = getSingleRoleGrade(u.roleName);
+  return grade >= 99 ? 100 : grade;
 }
 
 export type LogCategory = "ACCESSI" | "CANDIDATURE" | "MODIFICHE_ADMIN" | "VOTI" | "CDA";
@@ -362,8 +375,13 @@ export const HIERARCHY_CATEGORIES: Record<HierarchyCategoryKey, HierarchyCategor
   FUNZIONARI: {
     key: "FUNZIONARI",
     title: "Funzionari",
-    description: "Gestione di presidi, reparti sanitari ed operatività diretta",
-    rolesIncluded: ["Responsabile Del Presidio", "V. Responsabile Del Presidio", "Primario di Reparto", "V. Primario di Reparto"],
+    description: "Gestione di presidi ed operatività diretta",
+    rolesIncluded: [
+      "Responsabile Del Presidio",
+      "V. Responsabile Del Presidio",
+      "Primario di Reparto",
+      "V. Primario di Reparto",
+    ],
     color: "orange-400",
     borderColor: "border-slate-800/90 hover:border-slate-700",
     bgColor: "bg-slate-900/50 backdrop-blur-md",
@@ -406,6 +424,92 @@ export function getCategoryForRole(roleName: string): HierarchyCategoryKey {
   return "FUNZIONARI";
 }
 
+export interface OfficialMemberSeed {
+  name: string;
+  roleName: string;
+  token: string;
+  discordTag?: string;
+  cdaRoleName?: string;
+  hasCdaAccess?: boolean;
+}
+
+export const OFFICIAL_OWNERS_SEED: OfficialMemberSeed[] = [
+  {
+    name: "Antony Romano",
+    roleName: "Proprietario",
+    token: "EMS-ARPROP",
+    discordTag: "@anto.romano",
+  },
+  {
+    name: "Giovanni Manzo",
+    roleName: "Proprietario",
+    token: "EMS-GMPROP",
+    discordTag: "@smokafps",
+  },
+  {
+    name: "Simone Rizzus",
+    roleName: "Proprietario",
+    token: "EMS-SRPROP",
+    discordTag: "@simolmao",
+  },
+];
+
+export const OFFICIAL_IMAGE_MEMBERS_SEED: OfficialMemberSeed[] = [
+  { name: "Theo Smith", roleName: "Direttore Generale", token: "EMS-TSD286", discordTag: "@theo_smith", cdaRoleName: "Presidente CDA", hasCdaAccess: true },
+  { name: "Filippo Ciro", roleName: "Direttore Sanitario", token: "EMS-FC6767", discordTag: "@filippo_ciro", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Luca Brizzante", roleName: "Direttore Sanitario", token: "EMS-LBC6A6", discordTag: "@luca_brizzante", cdaRoleName: "Segretario CDA", hasCdaAccess: true },
+  { name: "Matias Corleone", roleName: "Direttore Sanitario", token: "EMS-MCA496", discordTag: "@matias_corleone", cdaRoleName: "Vice Presidente CDA", hasCdaAccess: true },
+  { name: "Ares Migliorini", roleName: "V. Direttore Sanitario", token: "EMS-AM59DB", discordTag: "@ares_migliorini", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Igor Lestrange", roleName: "V. Direttore Sanitario", token: "EMS-ILB5D2", discordTag: "@igor_lestrange", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Ciccio Losavio", roleName: "Segretario Direzione", token: "EMS-CLA9CC", discordTag: "@ciccio_losavio", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Dutch Esposito", roleName: "Segretario Direzione", token: "EMS-DEC97C", discordTag: "@dutch_esposito", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Diego Trombini", roleName: "Supervisore Generale", token: "EMS-DT0311", discordTag: "@diego_trombini", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Jolyne Kujo", roleName: "Supervisore Generale", token: "EMS-JK58DF", discordTag: "@jolyne_kujo" },
+  { name: "Jonathan Giacomarra", roleName: "Supervisore", token: "EMS-JG211B", discordTag: "@jonathan_giacomarra", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Rocco Ali", roleName: "V. Supervisore", token: "EMS-RAA405", discordTag: "@rocco_ali", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Mimmo Diesel", roleName: "Assistente Supervisore", token: "EMS-MD5D0E", discordTag: "@mimmo_diesel" },
+  { name: "Raffaele Bravi", roleName: "Assistente Supervisore", token: "EMS-RB1237", discordTag: "@raffaele_bravi" },
+  { name: "Rick Maltese", roleName: "V. Responsabile Del Presidio", token: "EMS-RM6E9E", discordTag: "@rick_maltese" },
+  { name: "Alex De Santis", roleName: "Primario di Reparto", token: "EMS-ADSY34", discordTag: "@alex_de_santis" },
+  { name: "Kevin Panetto", roleName: "Primario di Reparto", token: "EMS-KP28RC", discordTag: "@kevin_panetto" },
+  { name: "Mirko Leone", roleName: "Primario di Reparto", token: "EMS-ML373T", discordTag: "@mirko_leone" },
+  { name: "Antonio Palermo", roleName: "V. Primario di Reparto", token: "EMS-AP34FW", discordTag: "@antonio_palermo" },
+  { name: "Logan Red", roleName: "V. Primario di Reparto", token: "EMS-LR37DF", discordTag: "@logan_red" },
+  { name: "Nick Larsson", roleName: "V. Primario di Reparto", token: "EMS-NLDF73", discordTag: "@nick_larsson" },
+  { name: "Sofia Leone", roleName: "V. Primario di Reparto", token: "EMS-SL923R", discordTag: "@sofia_leone" },
+];
+
+export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
+  "EMS-2410PROP",
+  "EMS-ARPROP",
+  "EMS-GMPROP",
+  "EMS-SRPROP",
+  "EMS-TSD286",
+  "EMS-FC6767",
+  "EMS-LBC6A6",
+  "EMS-MCA496",
+  "EMS-AM59DB",
+  "EMS-ILB5D2",
+  "EMS-CLA9CC",
+  "EMS-DEC97C",
+  "EMS-DT0311",
+  "EMS-JK58DF",
+  "EMS-JG211B",
+  "EMS-RAA405",
+  "EMS-MD5D0E",
+  "EMS-RB1237",
+  "EMS-RM6E9E",
+  "EMS-ADSY34",
+  "EMS-KP28RC",
+  "EMS-ML373T",
+  "EMS-AP34FW",
+  "EMS-LR37DF",
+  "EMS-NLDF73",
+  "EMS-SL923R",
+]);
+
+
+
 export type CandidaturaStatus = "PENDING" | "APPROVED" | "REJECTED" | "CANCELLED";
 
 export type CdaStatus = "PENDING_RENDER" | "IN_VOTING" | "APPROVED" | "REJECTED" | "RETURNED" | "TIE_PENDING";
@@ -415,6 +519,7 @@ export interface CdaUserVote {
   voterName: string;
   voterRole: string;
   decision: "FAVOREVOLE" | "CONTRARIO" | "ASTENUTO";
+  chosenRole?: string;
   timestamp: string;
   reason?: string;
 }
@@ -452,7 +557,7 @@ export interface Candidatura {
   cdaData?: CdaData;
 }
 
-export type CdaProposalType = "GENERICA" | "PROMOZIONE";
+export type CdaProposalType = "GENERICA" | "PROMOZIONE" | "REINTEGRO";
 
 export type CdaProposalStatus = "PENDING" | "PENDING_COSIGNERS" | "PENDING_REVISION" | "IN_VOTING" | "APPROVED" | "REJECTED" | "RETURNED" | "CANCELLED";
 
@@ -475,6 +580,8 @@ export interface CdaProposal {
   targetEmployeeName?: string;
   targetCurrentRole?: string;
   targetProposedRole?: string;
+  reinstatementVotingRoles?: string[];
+  finalApprovedRole?: string;
   status: CdaProposalStatus;
   rejectionReason?: string;
   cancellationReason?: string;
@@ -543,6 +650,71 @@ export const CANDIDATURA_DESIRED_ROLES = [
   { name: "Responsabile Del Presidio", colorHex: "#ea580c" },
 ];
 
+export const CANDIDATURA_ROLE_PROGRESSION: Record<string, string> = {
+  "Primario": "V. Primario di Reparto",
+  "V. Primario di Reparto": "Primario di Reparto",
+  "Primario di Reparto": "V. Responsabile Del Presidio",
+  "V. Responsabile Del Presidio": "Responsabile Del Presidio",
+};
+
+export function getNextPromotionRole(currentRole: string): string {
+  if (!currentRole) return "V. Primario di Reparto";
+  const trimmed = currentRole.trim();
+  if (CANDIDATURA_ROLE_PROGRESSION[trimmed]) {
+    return CANDIDATURA_ROLE_PROGRESSION[trimmed];
+  }
+  const lower = trimmed.toLowerCase();
+  for (const [curr, next] of Object.entries(CANDIDATURA_ROLE_PROGRESSION)) {
+    if (curr.toLowerCase() === lower) return next;
+  }
+  return "V. Primario di Reparto";
+}
+
+export interface ExcelColumnDef {
+  id: string; // unique identifier (e.g., "fullName", "currentRole", "newRole", "cdaRole", "dgsRole", "leaveStatus", "notes", or custom "custom_xyz")
+  key: string;
+  label: string;
+  type: "text" | "role" | "badge" | "leave" | "status" | "date";
+  isRemovable: boolean;
+  isCustom?: boolean;
+  order: number;
+  visible: boolean;
+  width?: string;
+}
+
+export const DEFAULT_EXCEL_COLUMNS: ExcelColumnDef[] = [
+  { id: "orderNumber", key: "orderNumber", label: "#", type: "text", isRemovable: false, order: 0, visible: true, width: "w-9" },
+  { id: "fullName", key: "fullName", label: "Membri del NOSTRO EMS", type: "text", isRemovable: false, order: 1, visible: true, width: "min-w-[140px]" },
+  { id: "currentRole", key: "currentRole", label: "Ruolo Attuale", type: "role", isRemovable: true, order: 2, visible: true, width: "min-w-[105px]" },
+  { id: "newRole", key: "newRole", label: "Nuovo Grado", type: "role", isRemovable: true, order: 3, visible: true, width: "min-w-[120px]" },
+  { id: "cdaRole", key: "cdaRole", label: "CDA", type: "badge", isRemovable: true, order: 4, visible: true, width: "min-w-[80px]" },
+  { id: "dgsRole", key: "dgsRole", label: "DGS", type: "badge", isRemovable: true, order: 5, visible: true, width: "min-w-[85px]" },
+  { id: "leaveStatus", key: "leaveStatus", label: "Assenze / Ferie", type: "leave", isRemovable: true, order: 6, visible: true, width: "min-w-[95px]" },
+  { id: "notes", key: "notes", label: "Note", type: "text", isRemovable: true, order: 7, visible: true, width: "min-w-[90px]" },
+];
+
+export interface ExcelGerarchiaEntry {
+  id: string;
+  orderNumber?: number;
+  fullName: string;
+  currentRole: string; // Grado Attuale
+  newRole: string; // Nuovo Grado (Colonna chiave auto-aggiornata!)
+  cdaRole?: string; // Ruolo CDA (es. Presidente CDA, V. Presidente CDA, Segretario CDA, CDA)
+  dgsRole?: string; // Ruolo DGS (es. Responsabile DGS, Supervisore DGS, Direttore DGS, V.Direttore DGS)
+  leaveStatus?: string; // Assenze / Ferie (es. FERIE, ASSENTE DA TEMPO, FERIE NON DICHIARATE, ASPETTATIVA, DEVE SVEGLIARSI)
+  sourceType: "CANDIDATURA" | "CDA_PROPOSTA" | "GERARCHIA" | "MANUALE";
+  sourceDetails?: string;
+  approvedBy?: string;
+  status: "CONFERMATO" | "IN_VALUTAZIONE" | "IN_VOTAZIONE_CDA" | "ARCHIVIATO";
+  notes?: string;
+  customFields?: Record<string, string>; // Support for user-created custom dynamic columns!
+  discordTag?: string;
+  badge?: string;
+  updatedAt: string;
+}
+
+export const GOOGLE_SHEET_GERARCHIA_URL = "https://docs.google.com/spreadsheets/d/1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258/edit?gid=0#gid=0";
+
 export interface RoleBadgeStyle {
   style?: CSSProperties;
   className: string;
@@ -552,6 +724,13 @@ export function getRoleBadgeStyle(roleName: string): RoleBadgeStyle {
   if (!roleName) return { className: "bg-slate-800 text-slate-300 border border-slate-700 font-bold" };
   
   const r = roleName.trim().toLowerCase();
+  
+  if (r.includes("licenziamento") || r.includes("licenziato")) {
+    return { className: "bg-rose-600/30 text-rose-300 border border-rose-500/60 font-black shadow-sm" };
+  }
+  if (r.includes("aspettativa")) {
+    return { className: "bg-emerald-800/30 text-emerald-300 border border-emerald-700/50 font-bold" };
+  }
   
   if (r.includes("v. primario di reparto") || r.includes("vice primario di reparto")) {
     return { className: "bg-amber-500/20 text-amber-300 border border-amber-500/40 font-bold" };
@@ -576,6 +755,9 @@ export function getRoleBadgeStyle(roleName: string): RoleBadgeStyle {
   }
   if (r.includes("infermiere") || r.includes("infermiero") || r === "infermiere°") {
     return { className: "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold" };
+  }
+  if (r.includes("volontario") || r.includes("volontaria")) {
+    return { className: "bg-[#c2410c]/25 text-[#ff7849] border border-[#ea580c]/50 font-bold shadow-xs" };
   }
   if (r.includes("tirocinante") || r.includes("allievo") || r === "tirocinante°") {
     return { className: "bg-lime-500/20 text-lime-300 border border-lime-500/40 font-bold" };

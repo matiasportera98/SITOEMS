@@ -97,7 +97,21 @@ body {
   -webkit-text-size-adjust: 100%;
 }
 
-/* Ensure no element causes horizontal scroll on mobile screens */
+/* Smartphone Landscape Mode Center Fix for Notifications */
+@media (orientation: landscape) and (max-height: 600px) {
+  .phone-landscape-center {
+    position: fixed !important;
+    top: 56% !important;
+    left: 50% !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: translate(-50%, -40%) !important;
+    width: min(90vw, 380px) !important;
+    max-height: 78vh !important;
+    margin: 0 !important;
+  }
+}
+
 @media (max-width: 640px) {
   * {
     max-width: 100vw;

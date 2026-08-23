@@ -32,11 +32,12 @@ import {
   Activity,
   Briefcase,
   Quote,
-  ChevronRight
+  ChevronRight,
+  FileSpreadsheet
 } from "lucide-react";
 
 interface LandingPageProps {
-  onNavigate: (mode: "voter" | "admin" | "hierarchy" | "candidatura" | "cda") => void;
+  onNavigate: (mode: "voter" | "admin" | "hierarchy" | "candidatura" | "cda" | "excel_gerarchia") => void;
 }
 
 export default function LandingPage({ onNavigate }: LandingPageProps) {
@@ -106,15 +107,15 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
     },
     {
       name: "Simone Rizzus",
-      role: "Vice Proprietario",
+      role: "Proprietario",
       discord: "@simolmao",
       rawHandle: "simolmao",
       initials: "SR",
       avatarUrl: simoneImg,
-      isOwner: false,
-      avatarBorder: "border-slate-400/40 shadow-slate-500/10",
-      badgeClass: "bg-slate-400/15 text-slate-300 border-slate-400/30",
-      glow: "hover:shadow-slate-500/10 hover:border-slate-400/40",
+      isOwner: true,
+      avatarBorder: "border-amber-500/50 shadow-amber-500/20",
+      badgeClass: "bg-amber-500/15 text-amber-300 border-amber-500/40 shadow-sm shadow-amber-950/40",
+      glow: "hover:shadow-amber-500/10 hover:border-amber-500/40",
       pastJobs: [
         "Direttore Generale Ospedaliero su Emerals RP 3.1",
         "Ministro del Lavoro presso il Governo di Los Santos",
@@ -172,7 +173,7 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 20 }}
-          className="fixed bottom-6 right-6 z-50 bg-indigo-600 text-white px-4 py-3 rounded-xl shadow-2xl border border-indigo-400/30 flex items-center gap-3 text-xs font-bold"
+          className="fixed bottom-6 left-1/2 -translate-x-1/2 sm:left-auto sm:right-6 sm:translate-x-0 z-50 max-w-[calc(100vw-2rem)] bg-indigo-600 text-white px-4 py-3 rounded-xl shadow-2xl border border-indigo-400/30 flex items-center gap-3 text-xs font-bold"
         >
           <CheckCircle2 size={18} className="text-emerald-300 shrink-0" />
           <span>Username Discord ({copiedHandle}) copiato negli appunti!</span>
@@ -180,9 +181,9 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
       )}
 
       {/* Hero Section */}
-      <section className="relative pt-12 pb-20 px-6 overflow-hidden border-b border-slate-800/60">
+      <section className="relative pt-24 sm:pt-20 md:pt-16 pb-16 sm:pb-20 px-4 sm:px-6 overflow-hidden border-b border-slate-800/60">
         {/* Top Left GIF Link to emerals.it */}
-        <div className="absolute top-4 left-4 sm:top-6 sm:left-8 z-30">
+        <div className="absolute top-3 left-3 sm:top-6 sm:left-8 z-30">
           <motion.a
             href="https://emerals.it/"
             target="_blank"
@@ -197,7 +198,7 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
             <img 
               src={emeralsGif} 
               alt="Emerals RP" 
-              className="w-16 h-16 sm:w-24 sm:h-24 object-contain drop-shadow-[0_0_20px_rgba(16,185,129,0.5)] group-hover:drop-shadow-[0_0_30px_rgba(52,211,153,0.8)] transition-all duration-300"
+              className="w-12 h-12 sm:w-20 sm:h-20 md:w-24 md:h-24 object-contain drop-shadow-[0_0_20px_rgba(16,185,129,0.5)] group-hover:drop-shadow-[0_0_30px_rgba(52,211,153,0.8)] transition-all duration-300"
             />
           </motion.a>
         </div>
@@ -215,14 +216,14 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
             whileHover={{ scale: 1.05 }}
-            className="inline-flex items-center gap-2.5 px-4 py-1.5 rounded-full bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-500/30 hover:border-emerald-400/60 backdrop-blur-md cursor-pointer transition-all group"
+            className="inline-flex items-center gap-2 sm:gap-2.5 px-3 sm:px-4 py-1.5 rounded-full bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-500/30 hover:border-emerald-400/60 backdrop-blur-md cursor-pointer transition-all group max-w-full"
             title="Clicca per visitare il sito ufficiale di Emerals RP"
           >
-            <span className="relative flex h-2.5 w-2.5">
+            <span className="relative flex h-2.5 w-2.5 shrink-0">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             </span>
-            <span className="text-xs font-bold uppercase tracking-wider text-emerald-300 group-hover:text-emerald-200 transition-colors">
+            <span className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-emerald-300 group-hover:text-emerald-200 transition-colors text-center">
               Servizio Sanitario Operativo • Emerals RP 4.0 24/7
             </span>
           </motion.a>
@@ -255,6 +256,15 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
             >
               <Award size={18} />
               <span>Gerarchia EMS</span>
+              <ArrowRight size={16} />
+            </button>
+
+            <button
+              onClick={() => onNavigate("excel_gerarchia")}
+              className="px-6 py-3.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white text-sm font-bold tracking-wide shadow-lg shadow-emerald-950/60 border border-emerald-400/30 flex items-center gap-2.5 cursor-pointer transition-all hover:scale-102 active:scale-98"
+            >
+              <FileSpreadsheet size={18} />
+              <span>Excel Gerarchia</span>
               <ArrowRight size={16} />
             </button>
 
@@ -602,9 +612,24 @@ export default function LandingPage({ onNavigate }: LandingPageProps) {
           </div>
 
           <div className="flex flex-col md:flex-row justify-between items-center gap-4 text-center md:text-left text-slate-500 text-[11px]">
-            <p>© 2026 Emergency Medical Services (EMS) — Emerals RP 4.0. Tutti i diritti sono riservati a Simone Rizzo.</p>
-            <p className="max-w-md text-[10px] text-slate-600">
-              Piattaforma di soccorso sanitario e portale per la determinazione democratica delle cariche gerarchiche.
+            <div className="flex items-center gap-2 flex-wrap">
+              <span>© 2026 Emergency Medical Services (EMS) — Emerals RP 4.0.</span>
+              <button
+                type="button"
+                onClick={() => copyToClipboard("simorizzo.scout@gmail.com", "email_simone")}
+                className="text-emerald-400 hover:text-emerald-300 font-bold underline cursor-pointer transition-colors"
+                title="Clicca per copiare l'email: simorizzo.scout@gmail.com"
+              >
+                Tutti i diritti sono riservati a Simone Rizzus
+              </button>
+              {copiedHandle === "email_simone" && (
+                <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-md font-extrabold animate-pulse">
+                  Email copiata: simorizzo.scout@gmail.com!
+                </span>
+              )}
+            </div>
+            <p className="max-w-md text-[10px] text-slate-500 tracking-wider uppercase font-bold">
+              PORTALE UFFICIALE EMS - UTILIZZATO DALLO STAFF DELL'OSPEDALE PER FUNZIONI AMMINISTRATIVE
             </p>
           </div>
         </div>

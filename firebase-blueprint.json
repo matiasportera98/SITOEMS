@@ -3,7 +3,8 @@
     "settings": {
       "title": "settings",
       "description": "Global site settings",
-      "fields": {
+      "type": "object",
+      "properties": {
         "title": { "type": "string" },
         "description": { "type": "string" },
         "votingActive": { "type": "boolean" },
@@ -14,14 +15,17 @@
     "admin": {
       "title": "admin",
       "description": "Admin configuration and password hash",
-      "fields": {
-        "passwordHash": { "type": "string" }
+      "type": "object",
+      "properties": {
+        "passwordHash": { "type": "string" },
+        "emergencyPasswordHash": { "type": "string" }
       }
     },
     "candidates": {
       "title": "candidates",
       "description": "Candidate profiles for voting",
-      "fields": {
+      "type": "object",
+      "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
         "roleId": { "type": "string" }
@@ -30,12 +34,122 @@
     "votes": {
       "title": "votes",
       "description": "Recorded votes",
-      "fields": {
+      "type": "object",
+      "properties": {
         "id": { "type": "string" },
         "voterFullName": { "type": "string" },
         "timestamp": { "type": "string" },
-        "selections": { "type": "map" }
+        "selections": { "type": "object" }
+      }
+    },
+    "candidature": {
+      "title": "candidature",
+      "description": "User applications and promotion motions",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "fullName": { "type": "string" },
+        "currentRole": { "type": "string" },
+        "desiredRole": { "type": "string" },
+        "status": { "type": "string" },
+        "submittedAt": { "type": "string" }
+      }
+    },
+    "cdaProposals": {
+      "title": "cdaProposals",
+      "description": "CDA official proposals and voting",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "proposerName": { "type": "string" },
+        "status": { "type": "string" },
+        "submittedAt": { "type": "string" }
+      }
+    },
+    "access_logs": {
+      "title": "access_logs",
+      "description": "Audit trail and security access logs",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string" },
+        "ip": { "type": "string" },
+        "username": { "type": "string" },
+        "roleName": { "type": "string" },
+        "action": { "type": "string" },
+        "status": { "type": "string" },
+        "details": { "type": "string" },
+        "category": { "type": "string" }
+      }
+    },
+    "employee_tokens": {
+      "title": "employee_tokens",
+      "description": "Registered employee authentication tokens and sessions",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "username": { "type": "string" },
+        "roleName": { "type": "string" },
+        "isAllowed": { "type": "boolean" },
+        "verifiedAt": { "type": "string" }
+      }
+    },
+    "revoked_tokens": {
+      "title": "revoked_tokens",
+      "description": "Registry of deleted and revoked employee tokens",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "revokedAt": { "type": "string" }
+      }
+    },
+    "active_sessions": {
+      "title": "active_sessions",
+      "description": "Active admin and employee portal sessions",
+      "type": "object",
+      "properties": {
+        "token": { "type": "string" },
+        "createdAt": { "type": "number" },
+        "lastSeen": { "type": "number" }
+      }
+    },
+    "hierarchy_members": {
+      "title": "hierarchy_members",
+      "description": "Medical hierarchy organigram entries",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "category": { "type": "string" }
+      }
+    },
+    "gameScores": {
+      "title": "gameScores",
+      "description": "Leaderboard game scores for Filippa Runner",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "score": { "type": "number" },
+        "level": { "type": "number" },
+        "date": { "type": "string" }
       }
     }
+  },
+  "firestore": {
+    "/settings/{id}": { "schema": "settings", "description": "Site settings collection" },
+    "/admin/{id}": { "schema": "admin", "description": "Admin configuration" },
+    "/candidates/{id}": { "schema": "candidates", "description": "Candidates collection" },
+    "/votes/{id}": { "schema": "votes", "description": "Votes collection" },
+    "/candidature/{id}": { "schema": "candidature", "description": "Candidature motions" },
+    "/cda_proposals/{id}": { "schema": "cdaProposals", "description": "CDA proposals" },
+    "/access_logs/{id}": { "schema": "access_logs", "description": "Access logs audit" },
+    "/employee_tokens/{id}": { "schema": "employee_tokens", "description": "Employee tokens" },
+    "/revoked_tokens/{id}": { "schema": "revoked_tokens", "description": "Revoked tokens registry" },
+    "/active_sessions/{id}": { "schema": "active_sessions", "description": "Active web sessions" },
+    "/hierarchy_members/{id}": { "schema": "hierarchy_members", "description": "Hierarchy members" },
+    "/game_scores/{id}": { "schema": "gameScores", "description": "Game leaderboard scores" }
   }
 }

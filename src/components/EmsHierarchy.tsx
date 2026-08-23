@@ -43,23 +43,23 @@ function getRoleStyle(roleName: string): RoleStyle {
   if (name.includes("proprietario")) {
     if (name.includes("vice") || name.includes("v.")) {
       return {
-        badgeBg: "bg-slate-950/90 border-[#b89bf3]/50 font-extrabold shadow-sm shadow-indigo-950/30",
-        text: "bg-gradient-to-r from-[#8fb3f5] via-[#b89bf3] to-[#f28fbe] bg-clip-text text-transparent font-black",
-        border: "border-[#b89bf3]/60",
-        avatarBg: "bg-slate-950 border-[#b89bf3]/60",
-        avatarText: "bg-gradient-to-r from-[#8fb3f5] via-[#b89bf3] to-[#f28fbe] bg-clip-text text-transparent font-black",
-        iconColor: "",
-        symbol: "crown-vice",
+        badgeBg: "bg-slate-900/90 text-white border-slate-200/80 font-black",
+        text: "text-white font-black",
+        border: "border-slate-200/70",
+        avatarBg: "bg-slate-900 border-slate-200/80",
+        avatarText: "text-white",
+        iconColor: "text-slate-100",
+        symbol: "crown",
       };
     }
     return {
-      badgeBg: "bg-slate-900/90 text-white border-slate-200/80 font-black",
-      text: "text-white font-black",
-      border: "border-slate-200/70",
-      avatarBg: "bg-slate-900 border-slate-200/80",
-      avatarText: "text-white",
-      iconColor: "text-slate-100",
-      symbol: "crown",
+      badgeBg: "bg-slate-950/90 border-[#b89bf3]/50 font-extrabold shadow-sm shadow-indigo-950/30",
+      text: "bg-gradient-to-r from-[#8fb3f5] via-[#b89bf3] to-[#f28fbe] bg-clip-text text-transparent font-black",
+      border: "border-[#b89bf3]/60",
+      avatarBg: "bg-slate-950 border-[#b89bf3]/60",
+      avatarText: "bg-gradient-to-r from-[#8fb3f5] via-[#b89bf3] to-[#f28fbe] bg-clip-text text-transparent font-black",
+      iconColor: "",
+      symbol: "crown-vice",
     };
   }
 
@@ -210,6 +210,18 @@ function getRoleStyle(roleName: string): RoleStyle {
       avatarBg: "bg-amber-950/80 border-amber-600/60",
       avatarText: "text-amber-200",
       iconColor: "text-amber-400",
+      symbol: "star",
+    };
+  }
+
+  if (name.includes("volontario") || name.includes("volontaria")) {
+    return {
+      badgeBg: "bg-[#c2410c]/25 text-[#ff7849] border-[#ea580c]/50 font-bold",
+      text: "text-[#ff7849]",
+      border: "border-[#ea580c]/50",
+      avatarBg: "bg-orange-950/60 border-[#ea580c]/50",
+      avatarText: "text-[#ff7849]",
+      iconColor: "text-[#ff7849]",
       symbol: "star",
     };
   }

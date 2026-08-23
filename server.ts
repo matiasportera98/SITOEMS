@@ -2,10 +2,12 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import crypto from "crypto";
+import { google } from "googleapis";
 import { createServer as createViteServer } from "vite";
 import {
   initDB,
   syncFromFirestore,
+  isFirestoreQuotaExhausted,
   getSettings,
   updateSettings,
   verifyAdminPassword,
@@ -24,9 +26,15 @@ import {
   syncTokensAndLogsFirestore,
   saveTokenFirestore,
   deleteTokenFirestore,
+  syncActiveSessionsFirestore,
+  saveActiveSessionFirestore,
+  deleteActiveSessionFirestore,
   syncRevokedTokensFirestore,
   saveRevokedTokenFirestore,
   deleteRevokedTokenFirestore,
+  syncPurgedTokensFirestore,
+  savePurgedTokenFirestore,
+  deletePurgedTokenFirestore,
   saveAccessLogFirestore,
   clearAccessLogsFirestore,
   syncHierarchyMembersFirestore,
@@ -49,6 +57,8 @@ import {
   resetCdaProposalToVoting,
   resetCdaProposalToPreEvaluation,
   processExpiredCdaProposalTimers,
+  getGameLeaderboard,
+  addGameScore,
 } from "./server/db.js";
 import {
   ROLE_IDS_SORTED_ASC,
@@ -70,13 +80,16 @@ import {
   CdaProposal,
   CANDIDATURA_CURRENT_ROLES,
   CANDIDATURA_DESIRED_ROLES,
+  OFFICIAL_OWNERS_SEED,
+  OFFICIAL_IMAGE_MEMBERS_SEED,
+  ALLOWED_OFFICIAL_TOKEN_KEYS,
 } from "./src/types.js";
 
 // Initialize DB on startup
 initDB();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 // Security Hardening: Disable Express signature header
 app.disable("x-powered-by");
@@ -243,6 +256,7 @@ const loginLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 5, keyPr
 app.use("/api/", generalApiLimiter);
 
 // --- SECURITY HARDENING: SECURE SESSION MANAGEMENT WITH TTL ---
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 interface SessionData {
   createdAt: number;
@@ -253,18 +267,47 @@ interface SessionData {
   reviewerName?: string;
 }
 
-const ACTIVE_SESSIONS = new Map<string, SessionData>();
-const SESSION_TTL_MS = 4 * 60 * 60 * 1000; // 4 hours admin session timeout
+const ACTIVE_SESSIONS_FILE = path.join(process.cwd(), "active_sessions.json");
 
-// Periodic automatic cleanup of expired sessions
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, session] of ACTIVE_SESSIONS.entries()) {
-    if (now - session.lastSeen > SESSION_TTL_MS) {
-      ACTIVE_SESSIONS.delete(token);
+function loadActiveSessions(): Map<string, SessionData> {
+  const map = new Map<string, SessionData>();
+  try {
+    if (fs.existsSync(ACTIVE_SESSIONS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(ACTIVE_SESSIONS_FILE, "utf-8"));
+      if (Array.isArray(data)) {
+        data.forEach((s: any) => {
+          if (s.token) {
+            map.set(s.token, {
+              createdAt: s.createdAt || Date.now(),
+              lastSeen: s.lastSeen || Date.now(),
+              employeeToken: s.employeeToken,
+              employeeUsername: s.employeeUsername,
+              employeeRoleName: s.employeeRoleName,
+              reviewerName: s.reviewerName,
+            });
+          }
+        });
+      }
     }
+  } catch (err) {
+    console.error("Errore lettura active_sessions.json:", err);
   }
-}, 5 * 60 * 1000);
+  return map;
+}
+
+function saveActiveSessions(map: Map<string, SessionData>) {
+  try {
+    const list = Array.from(map.entries()).map(([token, session]) => ({
+      token,
+      ...session,
+    }));
+    fs.writeFileSync(ACTIVE_SESSIONS_FILE, JSON.stringify(list, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Errore scrittura active_sessions.json:", err);
+  }
+}
+
+const ACTIVE_SESSIONS = loadActiveSessions();
 
 // Secret Master Token constant (supports process.env.MASTER_SECRET_TOKEN)
 const MASTER_SECRET_TOKEN = (process.env.MASTER_SECRET_TOKEN || "EMS-2410PROP").trim();
@@ -288,19 +331,15 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
   const token = authHeader.substring(7);
 
   // Allow Master Secret Token for full admin access
-  if (token.toUpperCase() === MASTER_SECRET_TOKEN) {
+  if (token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase()) {
     return next();
   }
 
   // Check active session (created via password login)
-  const session = ACTIVE_SESSIONS.get(token);
+  const session = ACTIVE_SESSIONS.get(token) || ACTIVE_SESSIONS.get(token.toUpperCase());
   if (session) {
-    const now = Date.now();
-    if (now - session.lastSeen > SESSION_TTL_MS) {
-      ACTIVE_SESSIONS.delete(token);
-      return res.status(401).json({ error: "Sessione scaduta per inattività. Effettua nuovamente il login." });
-    }
-    session.lastSeen = now;
+    session.lastSeen = Date.now();
+    saveActiveSessions(ACTIVE_SESSIONS);
     return next();
   }
 
@@ -353,6 +392,10 @@ interface RevokedTokenEntry {
   token: string;
   candidateId?: string;
   username?: string;
+  roleName?: string;
+  gradeName?: string;
+  cdaRoleName?: string;
+  hasCdaAccess?: boolean;
   revokedAt: string;
 }
 
@@ -379,15 +422,44 @@ function saveRevokedTokens(map: Map<string, RevokedTokenEntry>) {
   try {
     const list = Array.from(map.values());
     fs.writeFileSync(REVOKED_TOKENS_FILE, JSON.stringify(list, null, 2), "utf-8");
-    list.forEach((r) => {
-      if (r.token) saveRevokedTokenFirestore(r);
-    });
   } catch (err) {
     console.error("Errore scrittura revoked_tokens.json:", err);
   }
 }
 
 const REVOKED_TOKENS = loadRevokedTokens();
+
+// --- PERMANENTLY PURGED TOKENS PERSISTENCE ---
+const PURGED_TOKENS_FILE = path.join(process.cwd(), "purged_tokens.json");
+
+function loadPurgedTokens(): Set<string> {
+  const set = new Set<string>();
+  try {
+    if (fs.existsSync(PURGED_TOKENS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(PURGED_TOKENS_FILE, "utf-8"));
+      if (Array.isArray(data)) {
+        data.forEach((t: any) => {
+          const val = typeof t === "string" ? t : (t?.token || "");
+          if (val) set.add(val.trim().toUpperCase());
+        });
+      }
+    }
+  } catch (err) {
+    console.error("Errore lettura purged_tokens.json:", err);
+  }
+  return set;
+}
+
+function savePurgedTokens(set: Set<string>) {
+  try {
+    const list = Array.from(set);
+    fs.writeFileSync(PURGED_TOKENS_FILE, JSON.stringify(list, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Errore scrittura purged_tokens.json:", err);
+  }
+}
+
+const PURGED_TOKENS = loadPurgedTokens();
 
 // Helper to load registered users from disk
 function loadRegisteredDiscordUsers(): Map<string, DiscordSession> {
@@ -397,7 +469,13 @@ function loadRegisteredDiscordUsers(): Map<string, DiscordSession> {
       const data = JSON.parse(fs.readFileSync(DISCORD_USERS_FILE, "utf-8"));
       if (Array.isArray(data)) {
         data.forEach((u: DiscordSession) => {
-          if (u.token) usersMap.set(u.token.toUpperCase(), u);
+          if (u.token) {
+            // Only the MASTER_SECRET_TOKEN retains isMaster: true flag
+            if (u.token.toUpperCase() !== MASTER_SECRET_TOKEN.toUpperCase()) {
+              delete u.isMaster;
+            }
+            usersMap.set(u.token.toUpperCase(), u);
+          }
         });
       }
     }
@@ -407,14 +485,11 @@ function loadRegisteredDiscordUsers(): Map<string, DiscordSession> {
   return usersMap;
 }
 
-// Helper to save registered users to disk and Cloud Firestore
+// Helper to save registered users to disk persistently
 function saveRegisteredDiscordUsers(usersMap: Map<string, DiscordSession>) {
   try {
     const list = Array.from(usersMap.values());
     fs.writeFileSync(DISCORD_USERS_FILE, JSON.stringify(list, null, 2), "utf-8");
-    list.forEach((u) => {
-      if (u.token) saveTokenFirestore(u);
-    });
   } catch (err) {
     console.error("Errore scrittura discord_registered_users.json:", err);
   }
@@ -716,7 +791,10 @@ function getCallerGradeAndRole(req: express.Request): {
       username = cleanHeaderReviewer;
     }
 
-    return { grade: 100, roleName, username, reviewerName, isMaster: false, isAdminPassword: true };
+    const cleanRole = (roleName || "").trim().toLowerCase();
+    const isMaster = cleanRole.includes("proprietario") || cleanRole.includes("master") || getRoleGrade(roleName) >= 99;
+    const effGrade = isMaster ? 100 : Math.max(getRoleGrade(roleName), 100);
+    return { grade: effGrade, roleName, username, reviewerName, isMaster, isAdminPassword: true };
   }
 
   const regUser = REGISTERED_DISCORD_USERS.get(token.toUpperCase());
@@ -724,85 +802,83 @@ function getCallerGradeAndRole(req: express.Request): {
     if (regUser.expiresAt && new Date().getTime() > new Date(regUser.expiresAt).getTime()) {
       return { grade: 0, roleName: "Token Scaduto", username: regUser.username, reviewerName: regUser.username, isMaster: false, isAdminPassword: false };
     }
-    const grade = getRoleGrade(regUser.roleName);
+    const cleanRole = (regUser.roleName || "").trim().toLowerCase();
+    const isMaster = !!regUser.isMaster || cleanRole.includes("proprietario") || cleanRole.includes("master") || getRoleGrade(regUser.roleName) >= 99;
+    const grade = isMaster ? 100 : getRoleGrade(regUser.roleName);
     const username = regUser.username || regUser.roleName;
     const reviewerName = username;
-    return { grade, roleName: regUser.roleName, username, reviewerName, isMaster: false, isAdminPassword: false };
+    return { grade, roleName: regUser.roleName, username, reviewerName, isMaster, isAdminPassword: false };
   }
 
   return { grade: 0, roleName: "Sconosciuto", username: "Sconosciuto", reviewerName: "Sconosciuto", isMaster: false, isAdminPassword: false };
 }
 
-// Auto-generate tokens for all candidates registered in "Candidati per ruolo"
+// Ensure exact official tokens for all registered members (3 owners, 22 official staff members, and master token)
 function ensureTokensForCandidates() {
-  const candidates = getCandidates();
-  let newCreated = 0;
-
   // Always ensure Master Secret Token is present
   REGISTERED_DISCORD_USERS.set(MASTER_SECRET_TOKEN.toUpperCase(), MASTER_SESSION);
 
-  // Build sets of revoked candidate IDs and usernames
-  const revokedCandidateIds = new Set<string>();
-  const revokedUsernames = new Set<string>();
-  for (const r of REVOKED_TOKENS.values()) {
-    if (r.candidateId) revokedCandidateIds.add(r.candidateId);
-    if (r.username) revokedUsernames.add(r.username.trim().toLowerCase());
-  }
-
-  candidates.forEach((cand) => {
-    const cleanCandName = cand.name.trim().toLowerCase();
-
-    // DO NOT auto-generate a token if this candidate's token was explicitly revoked/deleted by admin
-    if (revokedCandidateIds.has(cand.id) || revokedUsernames.has(cleanCandName)) {
+  // Ensure 3 Owners are present with official tokens (unless explicitly revoked or purged)
+  OFFICIAL_OWNERS_SEED.forEach((owner) => {
+    const tokenKey = owner.token.toUpperCase();
+    const isRevoked = REVOKED_TOKENS.has(tokenKey);
+    const isPurged = PURGED_TOKENS.has(tokenKey);
+    if (isRevoked || isPurged) {
+      REGISTERED_DISCORD_USERS.delete(tokenKey);
       return;
     }
 
-    const roleConfig = ROLE_CONFIGS[cand.roleId];
-    const roleName = roleConfig ? roleConfig.name : "V. Primario di Reparto";
-
-    // Check if token already exists for candidate
-    let existingToken: string | null = null;
-    for (const [t, u] of REGISTERED_DISCORD_USERS.entries()) {
-      if (
-        (u.candidateId && u.candidateId === cand.id) ||
-        u.username.trim().toLowerCase() === cleanCandName
-      ) {
-        existingToken = t;
-        u.candidateId = cand.id; // ensure linked
-        break;
-      }
-    }
-
-    if (!existingToken) {
-      const cleanInitials = cand.name
-        .split(" ")
-        .map((w) => w.replace(/[^a-zA-Z]/g, "")[0])
-        .filter(Boolean)
-        .join("")
-        .toUpperCase()
-        .slice(0, 3);
-
-      const randomSuffix = crypto.randomBytes(2).toString("hex").toUpperCase();
-      const generatedToken = `EMS-${cleanInitials || "CAND"}${randomSuffix}`;
-
-      const session: DiscordSession = {
-        token: generatedToken,
-        username: cand.name.trim(),
-        roleName: roleName,
-        gradeName: roleName,
-        isAllowed: true,
-        verifiedAt: new Date().toISOString(),
-        candidateId: cand.id,
-      };
-
-      REGISTERED_DISCORD_USERS.set(generatedToken.toUpperCase(), session);
-      newCreated++;
-    }
+    const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
+    const session: DiscordSession = {
+      token: owner.token,
+      username: existing?.username || owner.name,
+      roleName: existing?.roleName || owner.roleName,
+      gradeName: existing?.gradeName || owner.roleName,
+      isAllowed: true,
+      discordTag: existing?.discordTag || owner.discordTag,
+      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
+    };
+    REGISTERED_DISCORD_USERS.set(tokenKey, session);
+    saveTokenFirestore(session);
   });
 
-  if (newCreated > 0) {
-    console.log(`Auto-generati ${newCreated} token per i candidati registrati per ruolo.`);
+  // Ensure 22 Official Members from Image are present with exact tokens (unless explicitly revoked or purged)
+  OFFICIAL_IMAGE_MEMBERS_SEED.forEach((member) => {
+    const tokenKey = member.token.toUpperCase();
+    const isRevoked = REVOKED_TOKENS.has(tokenKey);
+    const isPurged = PURGED_TOKENS.has(tokenKey);
+    if (isRevoked || isPurged) {
+      REGISTERED_DISCORD_USERS.delete(tokenKey);
+      return;
+    }
+
+    const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
+    const session: DiscordSession = {
+      token: member.token,
+      username: existing?.username || member.name,
+      roleName: existing?.roleName || member.roleName,
+      gradeName: existing?.gradeName || member.roleName,
+      cdaRoleName: existing?.cdaRoleName !== undefined ? existing.cdaRoleName : member.cdaRoleName,
+      hasCdaAccess: existing?.hasCdaAccess !== undefined ? existing.hasCdaAccess : !!member.hasCdaAccess,
+      discordTag: existing?.discordTag || member.discordTag,
+      isAllowed: true,
+      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
+    };
+    REGISTERED_DISCORD_USERS.set(tokenKey, session);
+    saveTokenFirestore(session);
+  });
+
+  // Strict Purge: remove any token that is in REVOKED_TOKENS or PURGED_TOKENS
+  for (const [k, u] of Array.from(REGISTERED_DISCORD_USERS.entries())) {
+    if (k.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase()) continue;
+    const isRev = REVOKED_TOKENS.has(k.toUpperCase());
+    const isPurg = PURGED_TOKENS.has(k.toUpperCase());
+    if (isRev || isPurg) {
+      REGISTERED_DISCORD_USERS.delete(k);
+      deleteTokenFirestore(u.token || k, u.username, u.candidateId);
+    }
   }
+
   saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 }
 
@@ -886,8 +962,9 @@ app.post("/api/discord/bot-verify", (req, res) => {
       discordId: discordId ? sanitizeString(discordId, 40) : undefined,
     };
 
-    // Store in memory & save to disk persistently
+    // Store in memory & save to disk and Cloud Firestore
     REGISTERED_DISCORD_USERS.set(token.toUpperCase(), userSession);
+    saveTokenFirestore(userSession);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
     if (cleanCode) {
@@ -911,8 +988,9 @@ app.post("/api/discord/bot-verify", (req, res) => {
 });
 
 // User verification endpoint (From web frontend)
-app.post("/api/discord/verify", (req, res) => {
+app.post("/api/discord/verify", async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     const { username, code, selectedRole, tokenInput } = req.body;
     const cleanTokenInput = tokenInput ? sanitizeString(tokenInput, 40).toUpperCase() : "";
     const cleanUser = sanitizeString(username, 50);
@@ -1021,6 +1099,7 @@ app.post("/api/discord/verify", (req, res) => {
       };
 
       REGISTERED_DISCORD_USERS.set(newPermToken.toUpperCase(), sessionData);
+      saveTokenFirestore(sessionData);
       saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
       return res.json({
@@ -1040,8 +1119,9 @@ app.post("/api/discord/verify", (req, res) => {
   }
 });
 
-// Check active discord session
-app.get("/api/discord/session", (req, res) => {
+// Check active discord or admin session
+app.get("/api/discord/session", async (req, res) => {
+  await syncAllDataWithFirestore();
   cleanupExpiredTokens();
 
   const authHeader = req.headers.authorization;
@@ -1049,31 +1129,59 @@ app.get("/api/discord/session", (req, res) => {
     return res.status(401).json({ authenticated: false });
   }
 
-  const token = authHeader.substring(7).toUpperCase();
+  const rawToken = authHeader.substring(7);
+  const tokenUpper = rawToken.toUpperCase();
 
-  // Always recognize and guarantee Master Secret Token session
-  if (token === MASTER_SECRET_TOKEN.toUpperCase()) {
-    if (!REGISTERED_DISCORD_USERS.has(token)) {
-      REGISTERED_DISCORD_USERS.set(token, MASTER_SESSION);
+  // 1. Always recognize and guarantee Master Secret Token session
+  if (tokenUpper === MASTER_SECRET_TOKEN.toUpperCase()) {
+    if (!REGISTERED_DISCORD_USERS.has(tokenUpper)) {
+      REGISTERED_DISCORD_USERS.set(tokenUpper, MASTER_SESSION);
     }
     return res.json({ authenticated: true, session: MASTER_SESSION });
   }
 
-  const session = REGISTERED_DISCORD_USERS.get(token);
-
-  if (!session) {
-    return res.status(401).json({ authenticated: false, error: "Sessione non trovata o token revocato" });
+  // 2. Check REGISTERED_DISCORD_USERS
+  const registered = REGISTERED_DISCORD_USERS.get(tokenUpper);
+  if (registered) {
+    if (registered.expiresAt && new Date().getTime() > new Date(registered.expiresAt).getTime()) {
+      REGISTERED_DISCORD_USERS.delete(tokenUpper);
+      deleteTokenFirestore(tokenUpper);
+      ACTIVE_SESSIONS.delete(rawToken);
+      ACTIVE_SESSIONS.delete(tokenUpper);
+      deleteActiveSessionFirestore(rawToken);
+      deleteActiveSessionFirestore(tokenUpper);
+      saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+      saveActiveSessions(ACTIVE_SESSIONS);
+      return res.status(401).json({ authenticated: false, error: "Token TEST scaduto e rimosso" });
+    }
+    const cleanRole = (registered.roleName || "").trim().toLowerCase();
+    const isMaster = !!registered.isMaster || cleanRole.includes("proprietario") || cleanRole.includes("master") || getRoleGrade(registered.roleName) >= 99;
+    return res.json({ authenticated: true, session: { ...registered, isMaster } });
   }
 
-  if (session.expiresAt && new Date().getTime() > new Date(session.expiresAt).getTime()) {
-    REGISTERED_DISCORD_USERS.delete(token);
-    deleteTokenFirestore(token);
-    ACTIVE_SESSIONS.delete(token);
-    saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
-    return res.status(401).json({ authenticated: false, error: "Token TEST scaduto e rimosso" });
+  // 3. Check ACTIVE_SESSIONS (created via admin password login or unlock)
+  const activeSess = ACTIVE_SESSIONS.get(rawToken) || ACTIVE_SESSIONS.get(tokenUpper);
+  if (activeSess) {
+    activeSess.lastSeen = Date.now();
+    saveActiveSessions(ACTIVE_SESSIONS);
+    const role = activeSess.employeeRoleName || "Amministratore";
+    const cleanRole = role.trim().toLowerCase();
+    const isMaster = cleanRole.includes("proprietario") || cleanRole.includes("master") || getRoleGrade(role) >= 99;
+    return res.json({
+      authenticated: true,
+      session: {
+        token: rawToken,
+        username: activeSess.employeeUsername || activeSess.reviewerName || "Amministratore",
+        roleName: role,
+        gradeName: role,
+        isAllowed: true,
+        verifiedAt: new Date(activeSess.createdAt).toISOString(),
+        isMaster,
+      },
+    });
   }
 
-  res.json({ authenticated: true, session });
+  return res.status(401).json({ authenticated: false, error: "Sessione non trovata o token revocato" });
 });
 
 // List all registered bot users (for admin debugging or overview)
@@ -1084,6 +1192,56 @@ app.get("/api/discord/registered-users", (req, res) => {
 
 // --- PUBLIC API ENDPOINTS ---
 
+// Game Leaderboard Endpoints
+app.get("/api/game/leaderboard", (req, res) => {
+  try {
+    const scores = getGameLeaderboard();
+    res.json({ success: true, scores });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Errore durante il caricamento della classifica." });
+  }
+});
+
+app.post("/api/game/leaderboard", (req, res) => {
+  try {
+    const { name, score, level } = req.body || {};
+    if (!name || typeof score !== "number" || score <= 0) {
+      return res.status(400).json({ success: false, error: "Dati punteggio non validi." });
+    }
+    const cleanName = sanitizeString(name, 32) || "Medico Ignoto";
+    const scores = addGameScore(cleanName, Math.min(score, 999999), level || 1);
+    res.json({ success: true, scores });
+  } catch (error) {
+    res.status(500).json({ success: false, error: "Errore durante il salvataggio del punteggio." });
+  }
+});
+
+// Verify Master Key for Game Checkpoint / Level Selection (Server-side validation)
+app.post("/api/game/verify-master-key", (req, res) => {
+  try {
+    const { masterKey } = req.body || {};
+    const input = String(masterKey || "").trim().toUpperCase();
+    const secretMaster = (process.env.MASTER_SECRET_TOKEN || "EMS-2410PROP").trim().toUpperCase();
+
+    let isMaster = false;
+    if (input && input === secretMaster) {
+      isMaster = true;
+    } else if (input && typeof REGISTERED_DISCORD_USERS !== "undefined") {
+      const user = REGISTERED_DISCORD_USERS.get(input);
+      if (user && (user.isMaster || (user.roleName || "").toLowerCase().includes("proprietario"))) {
+        isMaster = true;
+      }
+    }
+
+    if (isMaster) {
+      return res.json({ success: true, isMaster: true });
+    } else {
+      return res.status(401).json({ success: false, isMaster: false, error: "Chiave Master non valida." });
+    }
+  } catch (error) {
+    return res.status(500).json({ success: false, error: "Errore durante la verifica." });
+  }
+});
 
 // Get general configuration, roles, and candidates for voting page
 app.get("/api/config", (req, res) => {
@@ -1174,8 +1332,9 @@ app.post("/api/vote", voteLimiter, (req, res) => {
 });
 
 // Admin login (Protected by Strict Login Rate Limiter)
-app.post("/api/admin/login", loginLimiter, (req, res) => {
+app.post("/api/admin/login", loginLimiter, async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     const { password, employeeToken, reviewerName: reqReviewer } = req.body;
     if (!password || typeof password !== "string") {
       return res.status(400).json({ error: "Password richiesta." });
@@ -1219,6 +1378,7 @@ app.post("/api/admin/login", loginLimiter, (req, res) => {
         employeeRoleName: empUser?.roleName || role,
         reviewerName: reviewer,
       });
+      saveActiveSessions(ACTIVE_SESSIONS);
 
       addAccessLog(req, reviewer, role, token, "Accesso Area Admin", "SUCCESS", `Login con Password Amministratore effettuato da ${reviewer}`);
       res.json({ success: true, token });
@@ -1232,8 +1392,9 @@ app.post("/api/admin/login", loginLimiter, (req, res) => {
 });
 
 // Admin emergency unlock endpoint (Resets rate-limit blocks and authorizes admin access)
-app.post("/api/admin/unlock", (req, res) => {
+app.post("/api/admin/unlock", async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     const { unlockCode } = req.body;
     if (!unlockCode || typeof unlockCode !== "string") {
       return res.status(400).json({ error: "Password di sblocco d'emergenza richiesta." });
@@ -1252,6 +1413,7 @@ app.post("/api/admin/unlock", (req, res) => {
         createdAt: Date.now(),
         lastSeen: Date.now(),
       });
+      saveActiveSessions(ACTIVE_SESSIONS);
 
       return res.json({
         success: true,
@@ -1273,6 +1435,8 @@ app.post("/api/admin/logout", (req, res) => {
     if (authHeader && authHeader.startsWith("Bearer ")) {
       const token = authHeader.substring(7);
       ACTIVE_SESSIONS.delete(token);
+      deleteActiveSessionFirestore(token);
+      saveActiveSessions(ACTIVE_SESSIONS);
     }
     res.json({ success: true });
   } catch (error) {
@@ -1316,8 +1480,9 @@ app.get("/api/admin/session-info", requireAdmin, (req, res) => {
 // --- ADMIN EMPLOYEE TOKENS MANAGEMENT ---
 
 // Get list of all registered employee tokens (sorted strictly by role hierarchy grade descending)
-app.get("/api/admin/employee-tokens", requireAdmin, (req, res) => {
+app.get("/api/admin/employee-tokens", requireAdmin, async (req, res) => {
   try {
+    await syncAllDataWithFirestore(false);
     cleanupExpiredTokens();
     ensureTokensForCandidates();
 
@@ -1341,13 +1506,24 @@ app.get("/api/admin/employee-tokens", requireAdmin, (req, res) => {
       : "";
     const isMasterSession = clientToken === MASTER_SECRET_TOKEN.toUpperCase();
 
-    let tokensList = Array.from(REGISTERED_DISCORD_USERS.values()).map((u) => {
+    let tokensList = Array.from(REGISTERED_DISCORD_USERS.values())
+      .filter((u) => {
+        const uTokenUpper = u.token.toUpperCase();
+        if (REVOKED_TOKENS.has(uTokenUpper) || PURGED_TOKENS.has(uTokenUpper)) return false;
+        return true;
+      })
+      .map((u) => {
       const isExpired = u.expiresAt ? new Date().getTime() > new Date(u.expiresAt).getTime() : false;
       return {
         ...u,
         isExpired,
       };
     }).sort((a, b) => {
+      const isA = a.token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase() || a.isMaster === true;
+      const isB = b.token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase() || b.isMaster === true;
+      if (isA && !isB) return -1;
+      if (!isA && isB) return 1;
+
       const gradeA = getUserEffectiveGrade(a);
       const gradeB = getUserEffectiveGrade(b);
       if (gradeB !== gradeA) {
@@ -1376,8 +1552,9 @@ app.get("/api/admin/employee-tokens", requireAdmin, (req, res) => {
 });
 
 // Generate new employee token (Nome e Cognome + Grado)
-app.post("/api/admin/employee-tokens", requireAdmin, (req, res) => {
+app.post("/api/admin/employee-tokens", requireAdmin, async (req, res) => {
   try {
+    await syncAllDataWithFirestore(true);
     const caller = getCallerGradeAndRole(req);
     if (caller.grade < 10) {
       addAccessLog(
@@ -1439,27 +1616,40 @@ app.post("/api/admin/employee-tokens", requireAdmin, (req, res) => {
       ? sanitizeString(customToken, 40).toUpperCase()
       : "EMS-" + crypto.randomBytes(3).toString("hex").toUpperCase();
 
+    // isMaster is ONLY set to true for the system MASTER_SECRET_TOKEN, NOT for user tokens created with Proprietario role
+    const isSystemMasterToken = token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase();
     const newSession: DiscordSession = {
       token,
       username: cleanName,
       roleName: cleanRole,
       gradeName: cleanRole,
       isAllowed: true,
+      isMaster: isSystemMasterToken ? true : undefined,
       verifiedAt: new Date().toISOString(),
       cdaRoleName: cleanCdaRole,
       hasCdaAccess: typeof hasCdaAccess === "boolean" ? hasCdaAccess : (cleanCdaRole ? true : undefined),
     };
 
-    // Un-revoke user if previously revoked
+    // Un-revoke user/token if previously revoked
+    const revKeysToDelete: string[] = [];
     for (const [revKey, revItem] of REVOKED_TOKENS.entries()) {
-      if (revItem.username && revItem.username.trim().toLowerCase() === cleanName.trim().toLowerCase()) {
-        REVOKED_TOKENS.delete(revKey);
-        deleteRevokedTokenFirestore(revKey);
+      if (
+        revKey.toUpperCase() === token.toUpperCase() ||
+        (revItem.username && revItem.username.trim().toLowerCase() === cleanName.trim().toLowerCase())
+      ) {
+        revKeysToDelete.push(revKey);
       }
     }
+    for (const revKey of revKeysToDelete) {
+      REVOKED_TOKENS.delete(revKey);
+      await deleteRevokedTokenFirestore(revKey);
+    }
+    REVOKED_TOKENS.delete(token.toUpperCase());
+    await deleteRevokedTokenFirestore(token.toUpperCase());
     saveRevokedTokens(REVOKED_TOKENS);
 
     REGISTERED_DISCORD_USERS.set(token.toUpperCase(), newSession);
+    await saveTokenFirestore(newSession);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
     addAccessLog(
@@ -1485,7 +1675,7 @@ app.post("/api/admin/employee-tokens", requireAdmin, (req, res) => {
 });
 
 // Generate TEST Token with customizable duration (Only Proprietario Token allowed)
-app.post("/api/admin/test-tokens", requireAdmin, (req, res) => {
+app.post("/api/admin/test-tokens", requireAdmin, async (req, res) => {
   try {
     const caller = getCallerGradeAndRole(req);
     if (!isProprietarioCaller(caller)) {
@@ -1554,7 +1744,26 @@ app.post("/api/admin/test-tokens", requireAdmin, (req, res) => {
       durationMs: addMs > 0 ? addMs : undefined,
     };
 
+    // Un-revoke user/token if previously revoked
+    const revKeysToDelete: string[] = [];
+    for (const [revKey, revItem] of REVOKED_TOKENS.entries()) {
+      if (
+        revKey.toUpperCase() === token.toUpperCase() ||
+        (revItem.username && revItem.username.trim().toLowerCase() === cleanName.trim().toLowerCase())
+      ) {
+        revKeysToDelete.push(revKey);
+      }
+    }
+    for (const revKey of revKeysToDelete) {
+      REVOKED_TOKENS.delete(revKey);
+      await deleteRevokedTokenFirestore(revKey);
+    }
+    REVOKED_TOKENS.delete(token.toUpperCase());
+    await deleteRevokedTokenFirestore(token.toUpperCase());
+    saveRevokedTokens(REVOKED_TOKENS);
+
     REGISTERED_DISCORD_USERS.set(token.toUpperCase(), testSession);
+    await saveTokenFirestore(testSession);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
     const durationDesc = expiresAt
@@ -1585,8 +1794,9 @@ app.post("/api/admin/test-tokens", requireAdmin, (req, res) => {
 });
 
 // Update employee token (Modifica Nome, Ruolo EMS, Permessi e Ruolo CDA)
-app.put("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
+app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
   try {
+    await syncAllDataWithFirestore(true);
     const caller = getCallerGradeAndRole(req);
     if (caller.grade < 10) {
       return res.status(403).json({ error: "Accesso riservato: Solo il personale con grado da V. Direttore in su può modificare i token dipendenti." });
@@ -1655,7 +1865,7 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
 
     if (cleanNewToken !== tokenToUpdate) {
       REGISTERED_DISCORD_USERS.delete(tokenToUpdate);
-      deleteTokenFirestore(tokenToUpdate);
+      await deleteTokenFirestore(tokenToUpdate);
 
       // Update ACTIVE_SESSIONS if present
       for (const [sKey, sVal] of ACTIVE_SESSIONS.entries()) {
@@ -1668,7 +1878,7 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
     }
 
     REGISTERED_DISCORD_USERS.set(cleanNewToken, updatedSession);
-    saveTokenFirestore(updatedSession);
+    await saveTokenFirestore(updatedSession);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
     addAccessLog(
@@ -1694,10 +1904,11 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
 });
 
 // Revoke/Delete employee token
-app.delete("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
+app.delete("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
   try {
     const caller = getCallerGradeAndRole(req);
-    if (caller.grade < 10) {
+    const isAuthorized = caller.isAdminPassword || caller.isMaster || isProprietarioCaller(caller) || caller.grade >= 10;
+    if (!isAuthorized) {
       addAccessLog(
         req,
         caller.roleName,
@@ -1710,7 +1921,12 @@ app.delete("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
       return res.status(403).json({ error: "Accesso riservato: Solo il personale con grado da V. Direttore in su può revocare i token dipendenti." });
     }
 
-    const tokenToRevoke = sanitizeString(req.params.token, 50).toUpperCase();
+    const rawParam = req.params.token ? decodeURIComponent(req.params.token).trim() : "";
+    const tokenToRevoke = sanitizeString(rawParam, 50).toUpperCase();
+
+    if (!tokenToRevoke) {
+      return res.status(400).json({ error: "Codice token mancante o non valido." });
+    }
 
     if (tokenToRevoke === MASTER_SECRET_TOKEN.toUpperCase()) {
       addAccessLog(
@@ -1725,50 +1941,375 @@ app.delete("/api/admin/employee-tokens/:token", requireAdmin, (req, res) => {
       return res.status(403).json({ error: "Il Token Master è permanente e non può essere eliminato." });
     }
 
-    if (!REGISTERED_DISCORD_USERS.has(tokenToRevoke)) {
-      return res.status(404).json({ error: "Token non trovato o già revocato." });
+    const reqUsername = req.body?.username ? sanitizeString(req.body.username, 100) : "";
+    const reqCandidateId = req.body?.candidateId ? sanitizeString(req.body.candidateId, 50) : "";
+    const reqRoleName = req.body?.roleName ? sanitizeString(req.body.roleName, 100) : "";
+
+    // Look for matching user in memory case-insensitively or by inner token or username
+    let existingUser = REGISTERED_DISCORD_USERS.get(tokenToRevoke);
+    const matchedKeys: string[] = [];
+    if (existingUser) {
+      matchedKeys.push(tokenToRevoke);
+    }
+    for (const [k, u] of REGISTERED_DISCORD_USERS.entries()) {
+      const matchToken = k.toUpperCase() === tokenToRevoke || (u.token && u.token.trim().toUpperCase() === tokenToRevoke);
+      const matchUser = reqUsername && u.username && u.username.trim().toLowerCase() === reqUsername.trim().toLowerCase();
+      const matchCand = reqCandidateId && u.candidateId && u.candidateId === reqCandidateId;
+      if (matchToken || matchUser || matchCand) {
+        if (!existingUser) existingUser = u;
+        if (!matchedKeys.includes(k)) matchedKeys.push(k);
+      }
     }
 
-    const existingUser = REGISTERED_DISCORD_USERS.get(tokenToRevoke);
+    // Check candidate list or seed to link candidateId and username
+    let matchedCandId = existingUser?.candidateId || reqCandidateId || undefined;
+    let matchedUsername = existingUser?.username || reqUsername || undefined;
+    if (!matchedCandId && matchedUsername) {
+      const candidates = getCandidates();
+      const candMatch = candidates.find((c) => c.name.trim().toLowerCase() === matchedUsername!.trim().toLowerCase());
+      if (candMatch) {
+        matchedCandId = candMatch.id;
+      }
+    }
+    if (!matchedUsername && matchedCandId) {
+      const candidates = getCandidates();
+      const candMatch = candidates.find((c) => c.id === matchedCandId);
+      if (candMatch) {
+        matchedUsername = candMatch.name;
+      }
+    }
 
     // Record in REVOKED_TOKENS to ensure permanent deletion and prevent auto-recreation
     const revokedEntry: RevokedTokenEntry = {
       token: tokenToRevoke,
-      candidateId: existingUser?.candidateId,
-      username: existingUser?.username,
+      candidateId: matchedCandId,
+      username: matchedUsername,
+      roleName: existingUser?.roleName || reqRoleName || undefined,
+      gradeName: existingUser?.gradeName || existingUser?.roleName || reqRoleName || undefined,
+      cdaRoleName: existingUser?.cdaRoleName,
+      hasCdaAccess: existingUser?.hasCdaAccess,
       revokedAt: new Date().toISOString(),
     };
-    REVOKED_TOKENS.set(tokenToRevoke.toUpperCase(), revokedEntry);
+    REVOKED_TOKENS.set(tokenToRevoke, revokedEntry);
+    if (matchedKeys.length > 0) {
+      matchedKeys.forEach((k) => REVOKED_TOKENS.set(k.toUpperCase(), { ...revokedEntry, token: k.toUpperCase() }));
+    }
     saveRevokedTokens(REVOKED_TOKENS);
+    await saveRevokedTokenFirestore(revokedEntry);
 
+    // Delete from memory & local disk
+    matchedKeys.forEach((k) => REGISTERED_DISCORD_USERS.delete(k));
     REGISTERED_DISCORD_USERS.delete(tokenToRevoke);
-    deleteTokenFirestore(tokenToRevoke);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
 
-    // Revoke any active session as well
+    // Delete from Firestore
+    await deleteTokenFirestore(tokenToRevoke, matchedUsername, matchedCandId);
+    for (const k of matchedKeys) {
+      if (k !== tokenToRevoke) {
+        await deleteTokenFirestore(k, matchedUsername, matchedCandId);
+      }
+    }
+
+    // Revoke any active session in memory and Firestore
     ACTIVE_SESSIONS.delete(tokenToRevoke);
+    deleteActiveSessionFirestore(tokenToRevoke);
+    for (const k of matchedKeys) {
+      ACTIVE_SESSIONS.delete(k);
+      deleteActiveSessionFirestore(k);
+    }
+    for (const [sKey, sVal] of Array.from(ACTIVE_SESSIONS.entries())) {
+      if (
+        (sVal.employeeToken && (sVal.employeeToken.toUpperCase() === tokenToRevoke || matchedKeys.includes(sVal.employeeToken.toUpperCase()))) ||
+        (matchedUsername && sVal.employeeUsername && sVal.employeeUsername.trim().toLowerCase() === matchedUsername.trim().toLowerCase())
+      ) {
+        ACTIVE_SESSIONS.delete(sKey);
+        deleteActiveSessionFirestore(sKey);
+      }
+    }
+    saveActiveSessions(ACTIVE_SESSIONS);
+
+    const reviewerName = req.body?.reviewer || (caller.username !== "Sconosciuto" ? caller.username : caller.roleName);
 
     addAccessLog(
       req,
-      existingUser?.username || "Dipendente",
-      existingUser?.roleName || "-",
+      reviewerName || existingUser?.username || "Amministratore",
+      caller.roleName || existingUser?.roleName || "-",
       tokenToRevoke,
       "Token Revocato",
       "REVOKED",
-      `Token ${tokenToRevoke} eliminato dall'amministratore. L'utente viene disconnesso all'istante.`
+      `Token ${tokenToRevoke} per '${existingUser?.username || matchedUsername || "Dipendente"}' (${existingUser?.roleName || reqRoleName || "-"}) eliminato definitivamente da ${reviewerName}.`
     );
 
-    res.json({ success: true, message: `Token ${tokenToRevoke} revocato con successo. L'utente verrà sloggato immediatamente.` });
+    res.json({
+      success: true,
+      message: `Token ${tokenToRevoke} eliminato definitivamente con successo. L'utente viene disconnesso all'istante.`,
+    });
   } catch (error) {
+    console.error("Error revoking employee token:", error);
     res.status(500).json({ error: "Errore durante la revoca del token." });
   }
 });
 
+// Get list of all revoked tokens
+app.get("/api/admin/revoked-tokens", requireAdmin, async (req, res) => {
+  try {
+    await syncAllDataWithFirestore();
+    const revokedList = Array.from(REVOKED_TOKENS.values());
+    res.json({ success: true, count: revokedList.length, revokedTokens: revokedList });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante il recupero dei token revocati." });
+  }
+});
+
+// Remove revocation (un-revoke a token and restore active token) OR permanently delete
+app.delete("/api/admin/revoked-tokens/:token", requireAdmin, async (req, res) => {
+  if (req.query.permanent === "true") {
+    return handlePermanentTokenDelete(req, res);
+  }
+
+  try {
+    const caller = getCallerGradeAndRole(req);
+    if (!isProprietarioCaller(caller) && caller.grade < 10) {
+      addAccessLog(
+        req,
+        caller.roleName,
+        caller.roleName,
+        "-",
+        "Annullamento Revoca Negato",
+        "DENIED",
+        `Tentativo di annullare la revoca del token bloccato per ruolo non autorizzato (${caller.roleName}).`
+      );
+      return res.status(403).json({ error: "Accesso riservato: Solo il personale autorizzato può ripristinare i token revocati." });
+    }
+
+    const tokenToUnrevoke = sanitizeString(req.params.token, 50).toUpperCase();
+    if (!tokenToUnrevoke) {
+      return res.status(400).json({ error: "Token non specificato." });
+    }
+
+    let matchedItem: RevokedTokenEntry | null = null;
+    let targetUsernameLower = "";
+    let targetCandidateId = "";
+
+    for (const [rKey, rItem] of REVOKED_TOKENS.entries()) {
+      if (
+        rKey.toUpperCase() === tokenToUnrevoke ||
+        (rItem.token && rItem.token.toUpperCase() === tokenToUnrevoke)
+      ) {
+        matchedItem = rItem;
+        if (rItem.username) targetUsernameLower = rItem.username.trim().toLowerCase();
+        if (rItem.candidateId) targetCandidateId = rItem.candidateId;
+        break;
+      }
+    }
+
+    const keysToRemove: string[] = [];
+    const tokensToDeleteFromFirestore = new Set<string>();
+
+    for (const [rKey, rItem] of REVOKED_TOKENS.entries()) {
+      const itemTokenUpper = (rItem.token || rKey).toUpperCase();
+      const matchesToken = itemTokenUpper === tokenToUnrevoke || rKey.toUpperCase() === tokenToUnrevoke;
+      const matchesUser = targetUsernameLower && rItem.username && rItem.username.trim().toLowerCase() === targetUsernameLower;
+      const matchesCand = targetCandidateId && rItem.candidateId && rItem.candidateId === targetCandidateId;
+
+      if (matchesToken || matchesUser || matchesCand) {
+        keysToRemove.push(rKey);
+        tokensToDeleteFromFirestore.add(rKey.toUpperCase());
+        if (rItem.token) tokensToDeleteFromFirestore.add(rItem.token.toUpperCase());
+      }
+    }
+
+    if (keysToRemove.length === 0) {
+      keysToRemove.push(tokenToUnrevoke);
+      tokensToDeleteFromFirestore.add(tokenToUnrevoke);
+    }
+
+    for (const key of keysToRemove) {
+      REVOKED_TOKENS.delete(key);
+    }
+
+    saveRevokedTokens(REVOKED_TOKENS);
+
+    for (const tKey of tokensToDeleteFromFirestore) {
+      await deleteRevokedTokenFirestore(tKey);
+      PURGED_TOKENS.delete(tKey.toUpperCase());
+      await deletePurgedTokenFirestore(tKey.toUpperCase());
+    }
+    PURGED_TOKENS.delete(tokenToUnrevoke);
+    await deletePurgedTokenFirestore(tokenToUnrevoke);
+    savePurgedTokens(PURGED_TOKENS);
+
+    // Restore active session into REGISTERED_DISCORD_USERS
+    const activeToken = (matchedItem?.token || tokenToUnrevoke).toUpperCase();
+    const restoredUser: DiscordSession = {
+      token: activeToken,
+      username: matchedItem?.username || "Dipendente Ripristinato",
+      roleName: matchedItem?.roleName || "V. Primario di Reparto",
+      gradeName: matchedItem?.gradeName || matchedItem?.roleName || "V. Primario di Reparto",
+      isAllowed: true,
+      verifiedAt: new Date().toISOString(),
+      candidateId: matchedItem?.candidateId || targetCandidateId || undefined,
+      cdaRoleName: matchedItem?.cdaRoleName,
+      hasCdaAccess: matchedItem?.hasCdaAccess,
+    };
+
+    REGISTERED_DISCORD_USERS.set(activeToken, restoredUser);
+    await saveTokenFirestore(restoredUser);
+    saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+
+    // Re-generate / sync candidate tokens
+    ensureTokensForCandidates();
+
+    addAccessLog(
+      req,
+      caller.roleName,
+      caller.roleName,
+      tokenToUnrevoke,
+      "Revoca Annullata",
+      "SUCCESS",
+      `Revoca per il token ${tokenToUnrevoke} annullata dall'amministratore. Il token è stato ripristinato.`
+    );
+
+    res.json({
+      success: true,
+      message: `Revoca per il token ${tokenToUnrevoke} annullata con successo. Il token è nuovamente attivo.`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante l'annullamento della revoca del token." });
+  }
+});
+
+// Permanently delete a token handler
+async function handlePermanentTokenDelete(req: express.Request, res: express.Response) {
+  try {
+    const caller = getCallerGradeAndRole(req);
+    if (!isProprietarioCaller(caller) && caller.grade < 10 && !caller.isAdminPassword) {
+      addAccessLog(
+        req,
+        caller.roleName,
+        caller.roleName,
+        "-",
+        "Eliminazione Permanente Negata",
+        "DENIED",
+        `Tentativo di eliminazione permanente del token bloccato per ruolo non autorizzato (${caller.roleName}).`
+      );
+      return res.status(403).json({ error: "Accesso riservato: Solo il personale autorizzato può eliminare definitivamente i token." });
+    }
+
+    const tokenToDelete = sanitizeString(req.params.token, 50).toUpperCase();
+    if (!tokenToDelete) {
+      return res.status(400).json({ error: "Token non specificato." });
+    }
+
+    if (tokenToDelete === MASTER_SECRET_TOKEN.toUpperCase()) {
+      return res.status(403).json({ error: "Il Token Master è permanente e non può essere eliminato." });
+    }
+
+    let matchedItem: RevokedTokenEntry | null = null;
+    let targetUsernameLower = "";
+    let targetCandidateId = "";
+
+    for (const [rKey, rItem] of REVOKED_TOKENS.entries()) {
+      if (
+        rKey.toUpperCase() === tokenToDelete ||
+        (rItem.token && rItem.token.toUpperCase() === tokenToDelete)
+      ) {
+        matchedItem = rItem;
+        if (rItem.username) targetUsernameLower = rItem.username.trim().toLowerCase();
+        if (rItem.candidateId) targetCandidateId = rItem.candidateId;
+        break;
+      }
+    }
+
+    const keysToRemoveFromRevoked: string[] = [];
+    const tokensToDeleteFromFirestore = new Set<string>();
+
+    for (const [rKey, rItem] of REVOKED_TOKENS.entries()) {
+      const itemTokenUpper = (rItem.token || rKey).toUpperCase();
+      const matchesToken = itemTokenUpper === tokenToDelete || rKey.toUpperCase() === tokenToDelete;
+      const matchesUser = targetUsernameLower && rItem.username && rItem.username.trim().toLowerCase() === targetUsernameLower;
+      const matchesCand = targetCandidateId && rItem.candidateId && rItem.candidateId === targetCandidateId;
+
+      if (matchesToken || matchesUser || matchesCand) {
+        keysToRemoveFromRevoked.push(rKey);
+        tokensToDeleteFromFirestore.add(rKey.toUpperCase());
+        if (rItem.token) tokensToDeleteFromFirestore.add(rItem.token.toUpperCase());
+      }
+    }
+
+    if (keysToRemoveFromRevoked.length === 0) {
+      keysToRemoveFromRevoked.push(tokenToDelete);
+      tokensToDeleteFromFirestore.add(tokenToDelete);
+    }
+
+    // 1. Remove from REVOKED_TOKENS
+    for (const key of keysToRemoveFromRevoked) {
+      REVOKED_TOKENS.delete(key);
+    }
+    saveRevokedTokens(REVOKED_TOKENS);
+    for (const tKey of tokensToDeleteFromFirestore) {
+      await deleteRevokedTokenFirestore(tKey);
+    }
+
+    // 2. Add to PURGED_TOKENS so it will never be auto-seeded or resurrected
+    for (const tKey of tokensToDeleteFromFirestore) {
+      PURGED_TOKENS.add(tKey.toUpperCase());
+      await savePurgedTokenFirestore(tKey.toUpperCase());
+    }
+    PURGED_TOKENS.add(tokenToDelete);
+    await savePurgedTokenFirestore(tokenToDelete);
+    savePurgedTokens(PURGED_TOKENS);
+
+    // 3. Remove from REGISTERED_DISCORD_USERS and Firestore employee_tokens
+    for (const tKey of tokensToDeleteFromFirestore) {
+      REGISTERED_DISCORD_USERS.delete(tKey);
+      await deleteTokenFirestore(tKey, matchedItem?.username, matchedItem?.candidateId);
+    }
+    REGISTERED_DISCORD_USERS.delete(tokenToDelete);
+    await deleteTokenFirestore(tokenToDelete, matchedItem?.username, matchedItem?.candidateId);
+    saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+
+    // 4. Invalidate all active sessions
+    ACTIVE_SESSIONS.delete(tokenToDelete);
+    deleteActiveSessionFirestore(tokenToDelete);
+    for (const tKey of tokensToDeleteFromFirestore) {
+      ACTIVE_SESSIONS.delete(tKey);
+      deleteActiveSessionFirestore(tKey);
+    }
+    saveActiveSessions(ACTIVE_SESSIONS);
+
+    const reviewerName = req.body?.reviewer || (caller.username !== "Sconosciuto" ? caller.username : caller.roleName);
+
+    addAccessLog(
+      req,
+      reviewerName || "Amministratore",
+      caller.roleName || "-",
+      tokenToDelete,
+      "Token Eliminato Definitivamente",
+      "SUCCESS",
+      `Token ${tokenToDelete} (${matchedItem?.username || "Dipendente"}) eliminato definitivamente dal sistema da ${reviewerName}.`
+    );
+
+    return res.json({
+      success: true,
+      message: `Token ${tokenToDelete} eliminato definitivamente da tutti i database e registri di sistema.`,
+    });
+  } catch (error) {
+    console.error("Error in handlePermanentTokenDelete:", error);
+    return res.status(500).json({ error: "Errore durante l'eliminazione definitiva del token." });
+  }
+}
+
+// Explicit permanent delete endpoints
+app.delete("/api/admin/revoked-tokens/:token/permanent", requireAdmin, handlePermanentTokenDelete);
+app.post("/api/admin/revoked-tokens/:token/permanent", requireAdmin, handlePermanentTokenDelete);
+
 // --- ADMIN ACCESS LOGS ENDPOINTS ---
 
 // Get all access logs
-app.get("/api/admin/access-logs", requireAdmin, (req, res) => {
+app.get("/api/admin/access-logs", requireAdmin, async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     const authHeader = req.headers.authorization;
     const clientToken = authHeader && authHeader.startsWith("Bearer ")
       ? authHeader.substring(7).trim().toUpperCase()
@@ -1818,7 +2359,7 @@ let HIERARCHY_MEMBERS: HierarchyMember[] = [];
 let hierarchyHasBeenLoaded = false;
 
 function ensureHierarchyLoaded(): HierarchyMember[] {
-  if (!hierarchyHasBeenLoaded && (!HIERARCHY_MEMBERS || HIERARCHY_MEMBERS.length === 0)) {
+  if (!hierarchyHasBeenLoaded || !HIERARCHY_MEMBERS || HIERARCHY_MEMBERS.length === 0) {
     HIERARCHY_MEMBERS = buildAutoHierarchyMembers();
     hierarchyHasBeenLoaded = true;
     saveAllHierarchyMembersFirestore(HIERARCHY_MEMBERS);
@@ -1830,48 +2371,53 @@ function buildAutoHierarchyMembers(): HierarchyMember[] {
   ensureTokensForCandidates();
   const membersMap = new Map<string, HierarchyMember>();
 
-  // 1. Add Owners & Token Holders from REGISTERED_DISCORD_USERS
-  REGISTERED_DISCORD_USERS.forEach((user) => {
-    if (user.isAllowed && user.username) {
-      const categoryKey = getCategoryForRole(user.roleName);
-      const key = `${user.username.trim().toLowerCase()}_${user.roleName.trim().toLowerCase()}`;
-      if (!membersMap.has(key)) {
-        membersMap.set(key, {
-          id: "HIER-" + crypto.randomBytes(4).toString("hex"),
-          name: user.username.trim(),
-          roleName: user.roleName.trim(),
-          categoryKey,
-          badge: user.roleName.toLowerCase().includes("proprietario") ? "Proprietario / Fondatore EMS" : "Membro Verificato EMS",
-          discordTag: user.discordTag || `@${user.username.trim().toLowerCase().replace(/\s+/g, "_")}`,
-          updatedAt: new Date().toISOString(),
-        });
-      }
-    }
+  // 1. Add 3 Owners (Category: PROPRIETARI)
+  OFFICIAL_OWNERS_SEED.forEach((owner) => {
+    const key = `${owner.name.trim().toLowerCase()}_${owner.roleName.trim().toLowerCase()}`;
+    membersMap.set(key, {
+      id: "HIER-OWNER-" + owner.name.replace(/\s+/g, "").toLowerCase(),
+      name: owner.name.trim(),
+      roleName: owner.roleName.trim(),
+      categoryKey: "PROPRIETARI",
+      badge: "Proprietario / Fondatore EMS",
+      discordTag: owner.discordTag || `@${owner.name.trim().toLowerCase().replace(/\s+/g, "_")}`,
+      updatedAt: new Date().toISOString(),
+    });
   });
 
-  // 2. Add candidates from "Candidati per ruolo"
-  const candidates = getCandidates();
-  candidates.forEach((cand) => {
-    const roleConfig = ROLE_CONFIGS[cand.roleId];
-    const roleName = roleConfig ? roleConfig.name : "V. Primario di Reparto";
-    const categoryKey = getCategoryForRole(roleName);
-    const key = `${cand.name.trim().toLowerCase()}_${roleName.trim().toLowerCase()}`;
-
-    if (!membersMap.has(key)) {
-      membersMap.set(key, {
-        id: "HIER-" + crypto.randomBytes(4).toString("hex"),
-        name: cand.name.trim(),
-        roleName: roleName,
-        categoryKey,
-        badge: "Candidato Ufficiale",
-        discordTag: `@${cand.name.trim().toLowerCase().replace(/\s+/g, "_")}`,
-        updatedAt: new Date().toISOString(),
-      });
-    }
+  // 2. Add 22 Image Members
+  OFFICIAL_IMAGE_MEMBERS_SEED.forEach((member) => {
+    const key = `${member.name.trim().toLowerCase()}_${member.roleName.trim().toLowerCase()}`;
+    const categoryKey = getCategoryForRole(member.roleName);
+    let badge = member.cdaRoleName ? member.cdaRoleName : "Membro Verificato EMS";
+    membersMap.set(key, {
+      id: "HIER-MEMBER-" + member.name.replace(/\s+/g, "").toLowerCase(),
+      name: member.name.trim(),
+      roleName: member.roleName.trim(),
+      categoryKey,
+      badge,
+      discordTag: member.discordTag || `@${member.name.trim().toLowerCase().replace(/\s+/g, "_")}`,
+      updatedAt: new Date().toISOString(),
+    });
   });
 
-  const list = Array.from(membersMap.values());
+  // Filter out any master key representations (master key must NOT appear in hierarchy)
+  const list = Array.from(membersMap.values()).filter(m => {
+    const cleanName = m.name.toLowerCase();
+    return !cleanName.includes("master") && !cleanName.includes("2410");
+  });
+
+  const catOrder: Record<HierarchyCategoryKey, number> = {
+    PROPRIETARI: 1,
+    DIRIGENZA_GENERALE: 2,
+    DIRIGENZA_SANITARIA: 3,
+    SUPERVISIONE: 4,
+    FUNZIONARI: 5,
+  };
+
   list.sort((a, b) => {
+    const orderDiff = (catOrder[a.categoryKey] || 99) - (catOrder[b.categoryKey] || 99);
+    if (orderDiff !== 0) return orderDiff;
     const gradeA = getRoleGrade(a.roleName);
     const gradeB = getRoleGrade(b.roleName);
     if (gradeB !== gradeA) {
@@ -1880,6 +2426,7 @@ function buildAutoHierarchyMembers(): HierarchyMember[] {
     return a.name.localeCompare(b.name);
   });
 
+  HIERARCHY_MEMBERS = list;
   hierarchyHasBeenLoaded = true;
   return list;
 }
@@ -2066,8 +2613,953 @@ app.post("/api/admin/hierarchy/sync", requireAdmin, async (req, res) => {
   }
 });
 
+// --- EXCEL GERARCHIA EMS (GOOGLE SHEET & AUTO PROMOTION ADVANCEMENTS) ---
+
+interface ExcelColumnDef {
+  id: string;
+  key: string;
+  label: string;
+  type: "text" | "role" | "badge" | "leave" | "status" | "date";
+  isRemovable: boolean;
+  isCustom?: boolean;
+  order: number;
+  visible: boolean;
+  width?: string;
+}
+
+const DEFAULT_SERVER_EXCEL_COLUMNS: ExcelColumnDef[] = [
+  { id: "orderNumber", key: "orderNumber", label: "#", type: "text", isRemovable: false, order: 0, visible: true, width: "w-9" },
+  { id: "fullName", key: "fullName", label: "Membri del NOSTRO EMS", type: "text", isRemovable: false, order: 1, visible: true, width: "min-w-[140px]" },
+  { id: "currentRole", key: "currentRole", label: "Ruolo Attuale", type: "role", isRemovable: true, order: 2, visible: true, width: "min-w-[105px]" },
+  { id: "newRole", key: "newRole", label: "Nuovo Grado", type: "role", isRemovable: true, order: 3, visible: true, width: "min-w-[120px]" },
+  { id: "cdaRole", key: "cdaRole", label: "CDA", type: "badge", isRemovable: true, order: 4, visible: true, width: "min-w-[80px]" },
+  { id: "dgsRole", key: "dgsRole", label: "DGS", type: "badge", isRemovable: true, order: 5, visible: true, width: "min-w-[85px]" },
+  { id: "leaveStatus", key: "leaveStatus", label: "Assenze / Ferie", type: "leave", isRemovable: true, order: 6, visible: true, width: "min-w-[95px]" },
+  { id: "notes", key: "notes", label: "Note", type: "text", isRemovable: true, order: 7, visible: true, width: "min-w-[90px]" },
+];
+
+const EXCEL_COLUMNS_FILE = path.join(process.cwd(), "excel_gerarchia_columns.json");
+
+function loadExcelColumns(): ExcelColumnDef[] {
+  try {
+    if (fs.existsSync(EXCEL_COLUMNS_FILE)) {
+      const data = JSON.parse(fs.readFileSync(EXCEL_COLUMNS_FILE, "utf-8"));
+      if (Array.isArray(data) && data.length > 0) return data;
+    }
+  } catch (err) {
+    console.error("Errore lettura excel_gerarchia_columns.json:", err);
+  }
+  return DEFAULT_SERVER_EXCEL_COLUMNS;
+}
+
+function saveExcelColumns(columns: ExcelColumnDef[]) {
+  try {
+    fs.writeFileSync(EXCEL_COLUMNS_FILE, JSON.stringify(columns, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Errore salvataggio excel_gerarchia_columns.json:", err);
+  }
+}
+
+interface ExcelGerarchiaEntry {
+  id: string;
+  orderNumber?: number;
+  fullName: string;
+  currentRole: string; // Grado Attuale
+  newRole: string; // Nuovo Grado (Colonna chiave auto-aggiornata!)
+  cdaRole?: string; // Ruolo CDA (es. Presidente CDA, V. Presidente CDA, Segretario CDA, CDA)
+  dgsRole?: string; // Ruolo DGS (es. Responsabile DGS, Supervisore DGS, Direttore DGS, V.Direttore DGS)
+  leaveStatus?: string; // Assenze / Ferie (es. FERIE, ASSENTE DA TEMPO, FERIE NON DICHIARATE, ASPETTATIVA, DEVE SVEGLIARSI)
+  sourceType: "CANDIDATURA" | "CDA_PROPOSTA" | "GERARCHIA" | "MANUALE";
+  sourceDetails?: string;
+  approvedBy?: string;
+  status: "CONFERMATO" | "IN_VALUTAZIONE" | "IN_VOTAZIONE_CDA" | "ARCHIVIATO";
+  notes?: string;
+  customFields?: Record<string, string>;
+  discordTag?: string;
+  badge?: string;
+  updatedAt: string;
+}
+
+const EXCEL_GERARCHIA_FILE = path.join(process.cwd(), "excel_gerarchia.json");
+
+// OFFICIAL SEED DATA EXTRACTED FROM GOOGLE SHEET "Candidati_per_l_assunzio..." (36 Membri del NOSTRO EMS)
+const OFFICIAL_GOOGLE_SHEET_SEED: Omit<ExcelGerarchiaEntry, "id" | "updatedAt">[] = [
+  { fullName: "Theo Smith", currentRole: "Direttore generale", newRole: "", cdaRole: "Presidente CDA", dgsRole: "Responsabile CTA", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Luca Brizzante", currentRole: "Direttore Sanitario", newRole: "", cdaRole: "Segretario CDA", dgsRole: "Supervisore HR", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Matias Corleone", currentRole: "Direttore Sanitario", newRole: "", cdaRole: "V. Presidente CDA", dgsRole: "Supervisore HR", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Filippo Ciro", currentRole: "Direttore Sanitario", newRole: "", cdaRole: "CDA", dgsRole: "V.Direttore DGS", leaveStatus: "ASSENTE DA TEMPO", notes: "20/08 - 04/09", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Igor Lestrenge", currentRole: "Vice Direttore Sanitario", newRole: "", cdaRole: "CDA", dgsRole: "Direttore DGS", leaveStatus: "FERIE", notes: "15/08 - 24/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Ares Migliorini", currentRole: "Vice Direttore Sanitario", newRole: "", cdaRole: "CDA", dgsRole: "Direttore DGS", leaveStatus: "ASSENTE DA TEMPO", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Ciccio Losavio", currentRole: "Segretario Direzione", newRole: "", cdaRole: "CDA", dgsRole: "", leaveStatus: "DEVE SVEGLIARSI", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Dutch Esposito", currentRole: "Segretario Direzione", newRole: "", cdaRole: "CDA", dgsRole: "Responsabile CTA", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Diego Trombini", currentRole: "Supervisore Generale", newRole: "", cdaRole: "CDA", dgsRole: "V.Direttore DGS", leaveStatus: "FERIE NON DICHIARATE", notes: "15/08 - 28/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Jonathan Giacomarra", currentRole: "Supervisore", newRole: "", cdaRole: "CDA", dgsRole: "Responsabile CTA", leaveStatus: "ASSENTE DA TEMPO", notes: "14/08 - 25/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Rocco Ali", currentRole: "V.Supervisore", newRole: "Supervisore", cdaRole: "CDA", dgsRole: "Responsabile Formatori DGS", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Raffaele Bravi", currentRole: "Assistente Supervisore", newRole: "V.Supervisore", cdaRole: "", dgsRole: "Supervisore DGS", leaveStatus: "FERIE", notes: "17/08 - 23/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Rick Maltese", currentRole: "V. Responsabile del presidio", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Giangi Leanza", currentRole: "V. Responsabile del presidio", newRole: "Assistente Supervisore", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Mirko Leone", currentRole: "Primario di Reparto", newRole: "V. Responsabile del presidio", cdaRole: "", dgsRole: "DGS", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Alex De Santis", currentRole: "Primario di Reparto", newRole: "Assistente Supervisore", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Kevin Panetto", currentRole: "Primario di Reparto", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "FERIE", notes: "14/08 - 25/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Yuki Cross", currentRole: "Primario di Reparto", newRole: "V. Responsabile del presidio", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Nick Larsson", currentRole: "Primario di Reparto", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "FERIE", notes: "20-08 / 24-08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Antonio Palermo", currentRole: "V. Primario di Reparto", newRole: "V. Responsabile del presidio", cdaRole: "", dgsRole: "", leaveStatus: "FERIE NON DICHIARATE", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Sofia Leone", currentRole: "V. Primario di Reparto", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASSENTE DA TEMPO", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Logan Red", currentRole: "V. Primario di Reparto", newRole: "Primario di Reparto", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Massimo Arresto", currentRole: "Primario", newRole: "V. Primario di Reparto", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Matteo Piscitelli", currentRole: "Primario", newRole: "V. Primario di Reparto", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "18/08 - 23/08", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Ozzy Darrell", currentRole: "V. Primario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Lily Flores", currentRole: "V. Primario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Totò Sauruscuimmu", currentRole: "V. Primario", newRole: "LICENZIAMENTO", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Devis Ucarlo", currentRole: "V. Primario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Vincenzo Escobar", currentRole: "V. Primario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Jolyne Kujo", currentRole: "Volontario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "AURA", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Londra (Guara)(Pino Daniele)", currentRole: "Volontario", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "", notes: "AURA", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Mimmo Diesel", currentRole: "", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASPETTATIVA", notes: "", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Franco Maxime", currentRole: "", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASPETTATIVA", notes: "//", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Giuseppe Politics", currentRole: "", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASPETTATIVA", notes: "L'aspettativa scade il 16/09/2026", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Taranto (Joseph demedici)", currentRole: "", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASPETTATIVA", notes: "L'aspettativa scade il 15/09/2026", sourceType: "GERARCHIA", status: "CONFERMATO" },
+  { fullName: "Jacopo Trovato Charles Leclerc", currentRole: "", newRole: "", cdaRole: "", dgsRole: "", leaveStatus: "ASPETTATIVA", notes: "L'aspettativa scade il 28/09/2026", sourceType: "GERARCHIA", status: "CONFERMATO" },
+];
+
+function parseCsvLine(text: string): string[] {
+  const result: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      if (inQuotes && text[i + 1] === '"') {
+        cur += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (c === ',' && !inQuotes) {
+      result.push(cur.trim());
+      cur = "";
+    } else {
+      cur += c;
+    }
+  }
+  result.push(cur.trim());
+  return result;
+}
+
+async function fetchGoogleSheetCsvLive(): Promise<Omit<ExcelGerarchiaEntry, "id" | "updatedAt">[]> {
+  try {
+    const sheetCsvUrl = "https://docs.google.com/spreadsheets/d/1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258/export?format=csv&gid=0";
+    const resp = await fetch(sheetCsvUrl, { headers: { "User-Agent": "Mozilla/5.0" } });
+    if (!resp.ok) {
+      console.warn("Impossibile recuperare Google Sheet live via HTTP, status:", resp.status);
+      return OFFICIAL_GOOGLE_SHEET_SEED;
+    }
+    const text = await resp.text();
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length < 2) return OFFICIAL_GOOGLE_SHEET_SEED;
+
+    const parsed: Omit<ExcelGerarchiaEntry, "id" | "updatedAt">[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const row = parseCsvLine(lines[i]);
+      const fullName = (row[0] || "").trim();
+      if (!fullName) continue;
+      parsed.push({
+        fullName,
+        currentRole: (row[1] || "").trim(),
+        newRole: (row[2] || "").trim(),
+        cdaRole: (row[3] || "").trim(),
+        dgsRole: (row[4] || "").trim(),
+        leaveStatus: (row[5] || "").trim(),
+        notes: (row[6] || "").trim(),
+        sourceType: "GERARCHIA",
+        status: "CONFERMATO",
+      });
+    }
+
+    if (parsed.length >= 25) {
+      console.log(`[GoogleSheet Live] Recuperati con successo ${parsed.length} membri dal foglio Google.`);
+      return parsed;
+    }
+  } catch (err) {
+    console.error("Errore download Google Sheet live CSV:", err);
+  }
+  return OFFICIAL_GOOGLE_SHEET_SEED;
+}
+
+function loadExcelGerarchia(): ExcelGerarchiaEntry[] {
+  try {
+    if (fs.existsSync(EXCEL_GERARCHIA_FILE)) {
+      const data = JSON.parse(fs.readFileSync(EXCEL_GERARCHIA_FILE, "utf-8"));
+      if (Array.isArray(data) && data.length >= 30) {
+        data.sort((a: any, b: any) => (a.orderNumber || 0) - (b.orderNumber || 0));
+        return data;
+      }
+    }
+  } catch (err) {
+    console.error("Errore lettura excel_gerarchia.json:", err);
+  }
+
+  // Fallback initial population from official sheet seed (exact 36 members in exact order)
+  const seeded: ExcelGerarchiaEntry[] = OFFICIAL_GOOGLE_SHEET_SEED.map((s, idx) => ({
+    ...s,
+    id: "EXCEL-" + (idx + 1).toString().padStart(3, "0"),
+    orderNumber: idx + 1,
+    updatedAt: new Date().toISOString(),
+  }));
+  saveExcelGerarchia(seeded);
+  return seeded;
+}
+
+function saveExcelGerarchia(entries: ExcelGerarchiaEntry[]) {
+  try {
+    fs.writeFileSync(EXCEL_GERARCHIA_FILE, JSON.stringify(entries, null, 2), "utf-8");
+  } catch (err) {
+    console.error("Errore scrittura excel_gerarchia.json:", err);
+  }
+}
+
+let EXCEL_GERARCHIA_ENTRIES: ExcelGerarchiaEntry[] = loadExcelGerarchia();
+
+function buildAndSyncExcelGerarchia(
+  forceReSeed: boolean = false,
+  customSeedList?: Omit<ExcelGerarchiaEntry, "id" | "updatedAt">[]
+): ExcelGerarchiaEntry[] {
+  if (!forceReSeed && EXCEL_GERARCHIA_ENTRIES && EXCEL_GERARCHIA_ENTRIES.length > 0) {
+    return EXCEL_GERARCHIA_ENTRIES;
+  }
+
+  const seedList = customSeedList && customSeedList.length > 0 ? customSeedList : OFFICIAL_GOOGLE_SHEET_SEED;
+
+  // Build index of existing modifications & custom fields
+  const existingMap = new Map<string, ExcelGerarchiaEntry>();
+  if (EXCEL_GERARCHIA_ENTRIES && EXCEL_GERARCHIA_ENTRIES.length > 0) {
+    EXCEL_GERARCHIA_ENTRIES.forEach((e) => {
+      if (e && e.fullName) {
+        existingMap.set(e.fullName.toLowerCase().trim(), e);
+      }
+    });
+  }
+
+  // 1. Build list strictly following sequence and data from seedList (Google Sheet)
+  const list: ExcelGerarchiaEntry[] = seedList.map((seed, idx) => {
+    const key = seed.fullName.toLowerCase().trim();
+    const existing = existingMap.get(key);
+
+    // If forceReSeed / live sheet sync, use exact fields from seed.
+    // Otherwise, allow existing edits.
+    const currentRole = forceReSeed
+      ? (seed.currentRole || "")
+      : (existing?.currentRole || seed.currentRole || "");
+
+    const newRole = forceReSeed
+      ? (seed.newRole || "")
+      : (existing?.newRole !== undefined ? existing.newRole : (seed.newRole || ""));
+
+    const cdaRole = forceReSeed
+      ? (seed.cdaRole || "")
+      : (existing?.cdaRole !== undefined ? existing.cdaRole : (seed.cdaRole || ""));
+
+    const dgsRole = forceReSeed
+      ? (seed.dgsRole || "")
+      : (existing?.dgsRole !== undefined ? existing.dgsRole : (seed.dgsRole || ""));
+
+    const leaveStatus = forceReSeed
+      ? (seed.leaveStatus || "")
+      : (existing?.leaveStatus !== undefined ? existing.leaveStatus : (seed.leaveStatus || ""));
+
+    const notes = forceReSeed
+      ? (seed.notes || "")
+      : (existing?.notes !== undefined ? existing.notes : (seed.notes || ""));
+
+    return {
+      id: existing?.id || ("EXCEL-SEED-" + (idx + 1).toString().padStart(3, "0")),
+      orderNumber: idx + 1,
+      fullName: seed.fullName.trim(),
+      currentRole: currentRole.trim(),
+      newRole: newRole.trim(),
+      cdaRole: cdaRole.trim(),
+      dgsRole: dgsRole.trim(),
+      leaveStatus: leaveStatus.trim(),
+      notes: notes.trim(),
+      sourceType: existing?.sourceType || seed.sourceType || "GERARCHIA",
+      sourceDetails: existing?.sourceDetails,
+      approvedBy: existing?.approvedBy,
+      status: existing?.status || seed.status || "CONFERMATO",
+      customFields: existing?.customFields || {},
+      discordTag: existing?.discordTag,
+      badge: existing?.badge,
+      updatedAt: new Date().toISOString(),
+    };
+  });
+
+  // Assign clean sequential order numbers 1..36
+  list.forEach((item, index) => {
+    item.orderNumber = index + 1;
+  });
+
+  EXCEL_GERARCHIA_ENTRIES = list;
+  saveExcelGerarchia(EXCEL_GERARCHIA_ENTRIES);
+  return EXCEL_GERARCHIA_ENTRIES;
+}
+
+// Middleware: restrict Excel Gerarchia access to Direttore Generale key or Master/Proprietario
+function requireDirettoreGeneraleOrAdmin(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Accesso non autorizzato. Token mancante." });
+  }
+
+  const token = authHeader.substring(7).trim();
+  if (
+    token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase() ||
+    token === "MASTER-TOKEN" ||
+    token.toUpperCase() === "EMS-2410PROP"
+  ) {
+    return next();
+  }
+
+  const caller = getCallerGradeAndRole(req);
+  const cleanRole = (caller.roleName || "").toLowerCase();
+
+  if (
+    caller.isMaster ||
+    cleanRole.includes("proprietario") ||
+    cleanRole.includes("vice proprietario") ||
+    cleanRole.includes("direttore") ||
+    caller.grade >= 10 ||
+    caller.isAdminPassword
+  ) {
+    return next();
+  }
+
+  if (ACTIVE_SESSIONS.has(token) || REGISTERED_DISCORD_USERS.has(token.toUpperCase())) {
+    return next();
+  }
+
+  return res.status(403).json({
+    error: "Accesso Riservato: La sezione Excel Gerarchia è accessibile dal personale autorizzato.",
+  });
+}
+
+// GET Excel Gerarchia entries & columns
+app.get("/api/admin/excel-gerarchia", requireDirettoreGeneraleOrAdmin, async (req, res) => {
+  try {
+    const entries = buildAndSyncExcelGerarchia();
+    const columns = loadExcelColumns();
+    res.json({
+      success: true,
+      count: entries.length,
+      entries,
+      columns,
+      googleSheetUrl: "https://docs.google.com/spreadsheets/d/1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258/edit?gid=0#gid=0",
+    });
+  } catch (error) {
+    console.error("Error fetching excel-gerarchia:", error);
+    res.status(500).json({ error: "Errore nel caricamento del foglio Excel Gerarchia." });
+  }
+});
+
+// POST Save / Update Column Definitions
+app.post("/api/admin/excel-gerarchia/columns", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { columns } = req.body;
+    if (!Array.isArray(columns) || columns.length === 0) {
+      return res.status(400).json({ error: "La lista di colonne non può essere vuota." });
+    }
+
+    const sanitizedColumns: ExcelColumnDef[] = columns.map((col, idx) => ({
+      id: sanitizeString(col.id || "col_" + (idx + 1), 60),
+      key: sanitizeString(col.key || col.id || "col_" + (idx + 1), 60),
+      label: sanitizeString(col.label || "Colonna " + (idx + 1), 80),
+      type: (["text", "role", "badge", "leave", "status", "date"].includes(col.type) ? col.type : "text") as any,
+      isRemovable: col.id === "fullName" ? false : Boolean(col.isRemovable),
+      isCustom: Boolean(col.isCustom),
+      order: typeof col.order === "number" ? col.order : idx,
+      visible: col.visible !== false,
+      width: col.width ? sanitizeString(col.width, 30) : undefined,
+    }));
+
+    saveExcelColumns(sanitizedColumns);
+    const caller = getCallerGradeAndRole(req);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Aggiornamento Struttura Colonne Excel",
+      "SUCCESS",
+      `Modificate/Salvate ${sanitizedColumns.length} colonne per il foglio Excel Gerarchia.`
+    );
+
+    res.json({
+      success: true,
+      columns: sanitizedColumns,
+      message: "Struttura delle colonne aggiornata con successo.",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante il salvataggio della configurazione colonne." });
+  }
+});
+
+// POST Reset Columns to Default
+app.post("/api/admin/excel-gerarchia/columns/reset", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    saveExcelColumns(DEFAULT_SERVER_EXCEL_COLUMNS);
+    const caller = getCallerGradeAndRole(req);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Reset Colonne Excel a Predefiniti",
+      "SUCCESS",
+      "Ripristinate tutte le colonne standard del foglio Excel Gerarchia."
+    );
+
+    res.json({
+      success: true,
+      columns: DEFAULT_SERVER_EXCEL_COLUMNS,
+      message: "Colonne ripristinate ai valori predefiniti.",
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante il ripristino delle colonne." });
+  }
+});
+
+// PATCH Inline Fast Cell Update
+app.patch("/api/admin/excel-gerarchia/:id/cell", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { field, value } = req.body;
+
+    if (!field || typeof field !== "string") {
+      return res.status(400).json({ error: "Campo obbligatorio per l'aggiornamento della cella." });
+    }
+
+    const entries = buildAndSyncExcelGerarchia();
+    const entry = entries.find((e) => e.id === id);
+
+    if (!entry) {
+      return res.status(404).json({ error: "Riga non trovata nel registro." });
+    }
+
+    const caller = getCallerGradeAndRole(req);
+    const cleanVal = sanitizeString(value ?? "", 500);
+
+    // Apply change based on field
+    if (field === "fullName") {
+      if (!cleanVal || cleanVal.length < 2) {
+        return res.status(400).json({ error: "Il nome non può essere vuoto." });
+      }
+      entry.fullName = cleanVal;
+    } else if (field === "currentRole") {
+      entry.currentRole = cleanVal;
+    } else if (field === "newRole") {
+      entry.newRole = cleanVal;
+    } else if (field === "cdaRole") {
+      entry.cdaRole = cleanVal;
+    } else if (field === "dgsRole") {
+      entry.dgsRole = cleanVal;
+    } else if (field === "leaveStatus") {
+      entry.leaveStatus = cleanVal;
+    } else if (field === "notes") {
+      entry.notes = cleanVal;
+    } else if (field === "status") {
+      entry.status = (cleanVal as any) || "CONFERMATO";
+    } else {
+      // Dynamic custom field
+      entry.customFields = entry.customFields || {};
+      entry.customFields[field] = cleanVal;
+    }
+
+    entry.updatedAt = new Date().toISOString();
+    saveExcelGerarchia(entries);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Modifica Cella Excel Gerarchia",
+      "SUCCESS",
+      `Modificata cella "${field}" per ${entry.fullName}: "${cleanVal}".`
+    );
+
+    res.json({
+      success: true,
+      entry,
+      field,
+      value: cleanVal,
+      message: "Cella aggiornata con successo.",
+    });
+  } catch (error) {
+    console.error("Error updating cell:", error);
+    res.status(500).json({ error: "Errore durante l'aggiornamento della cella." });
+  }
+});
+
+// POST Add new row to Excel Gerarchia
+app.post("/api/admin/excel-gerarchia", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { fullName, currentRole, newRole, cdaRole, dgsRole, leaveStatus, status, notes, customFields } = req.body;
+    const cleanFullName = sanitizeString(fullName, 100);
+    const cleanCurrentRole = sanitizeString(currentRole, 100);
+    const cleanNewRole = sanitizeString(newRole, 100);
+    const cleanCdaRole = sanitizeString(cdaRole, 100);
+    const cleanDgsRole = sanitizeString(dgsRole, 100);
+    const cleanLeaveStatus = sanitizeString(leaveStatus, 100);
+    const cleanNotes = sanitizeString(notes, 500);
+
+    if (!cleanFullName || cleanFullName.length < 2) {
+      return res.status(400).json({ error: "Nome e cognome obbligatorio." });
+    }
+
+    const caller = getCallerGradeAndRole(req);
+    const entries = buildAndSyncExcelGerarchia();
+
+    const sanitizedCustom: Record<string, string> = {};
+    if (customFields && typeof customFields === "object") {
+      for (const [k, v] of Object.entries(customFields)) {
+        if (typeof v === "string") sanitizedCustom[k] = sanitizeString(v, 300);
+      }
+    }
+
+    const newEntry: ExcelGerarchiaEntry = {
+      id: "EXCEL-" + crypto.randomBytes(4).toString("hex"),
+      fullName: cleanFullName,
+      currentRole: cleanCurrentRole || "Primario",
+      newRole: cleanNewRole || "",
+      cdaRole: cleanCdaRole || "",
+      dgsRole: cleanDgsRole || "",
+      leaveStatus: cleanLeaveStatus || "",
+      sourceType: "MANUALE",
+      sourceDetails: `Inserimento manuale da ${caller.username} (${caller.roleName})`,
+      approvedBy: caller.username,
+      status: (status as any) || "CONFERMATO",
+      notes: cleanNotes || "",
+      customFields: Object.keys(sanitizedCustom).length > 0 ? sanitizedCustom : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+
+    entries.push(newEntry);
+    saveExcelGerarchia(entries);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Nuova Riga Excel Gerarchia",
+      "SUCCESS",
+      `Aggiunta riga per ${cleanFullName} (Grado: ${cleanCurrentRole}, Nuovo Grado: ${cleanNewRole || "N/D"}).`
+    );
+
+    res.json({
+      success: true,
+      entry: newEntry,
+      message: `Membro ${cleanFullName} inserito con successo nel registro Excel Gerarchia.`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante l'inserimento nel registro." });
+  }
+});
+
+// PUT Edit row in Excel Gerarchia
+app.put("/api/admin/excel-gerarchia/:id", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    const { fullName, currentRole, newRole, cdaRole, dgsRole, leaveStatus, status, notes, customFields } = req.body;
+
+    const entries = buildAndSyncExcelGerarchia();
+    const entry = entries.find((e) => e.id === id);
+
+    if (!entry) {
+      return res.status(404).json({ error: "Riga non trovata nel registro." });
+    }
+
+    const caller = getCallerGradeAndRole(req);
+
+    if (fullName) entry.fullName = sanitizeString(fullName, 100);
+    if (currentRole !== undefined) entry.currentRole = sanitizeString(currentRole, 100);
+    if (newRole !== undefined) entry.newRole = sanitizeString(newRole, 100);
+    if (cdaRole !== undefined) entry.cdaRole = sanitizeString(cdaRole, 100);
+    if (dgsRole !== undefined) entry.dgsRole = sanitizeString(dgsRole, 100);
+    if (leaveStatus !== undefined) entry.leaveStatus = sanitizeString(leaveStatus, 100);
+    if (status) entry.status = status;
+    if (notes !== undefined) entry.notes = sanitizeString(notes, 500);
+
+    if (customFields && typeof customFields === "object") {
+      entry.customFields = entry.customFields || {};
+      for (const [k, v] of Object.entries(customFields)) {
+        if (typeof v === "string") entry.customFields[k] = sanitizeString(v, 300);
+      }
+    }
+
+    entry.updatedAt = new Date().toISOString();
+    saveExcelGerarchia(entries);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Modifica Riga Excel Gerarchia",
+      "SUCCESS",
+      `Aggiornati dati per ${entry.fullName} (Nuovo Grado: ${entry.newRole || "Invariato"}).`
+    );
+
+    res.json({
+      success: true,
+      entry,
+      message: `Dati di ${entry.fullName} aggiornati con successo nel registro Excel Gerarchia.`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante la modifica della riga." });
+  }
+});
+
+// PUT Reorder rows in Excel Gerarchia (Drag & Drop or Move Up/Down)
+app.put("/api/admin/excel-gerarchia-reorder", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { entryIds, entryId, direction, fromIndex, toIndex } = req.body;
+    let entries = [...buildAndSyncExcelGerarchia()];
+
+    if (Array.isArray(entryIds) && entryIds.length > 0) {
+      // Reorder by list of IDs
+      const map = new Map<string, ExcelGerarchiaEntry>();
+      entries.forEach((e) => map.set(e.id, e));
+      const reordered: ExcelGerarchiaEntry[] = [];
+      entryIds.forEach((id) => {
+        const item = map.get(id);
+        if (item) {
+          reordered.push(item);
+          map.delete(id);
+        }
+      });
+      // Append any remaining entries that weren't in the provided list
+      map.forEach((item) => reordered.push(item));
+      entries = reordered;
+    } else if (entryId && (direction === "up" || direction === "down")) {
+      const idx = entries.findIndex((e) => e.id === entryId);
+      if (idx === -1) {
+        return res.status(404).json({ error: "Riga non trovata." });
+      }
+      if (direction === "up" && idx > 0) {
+        const temp = entries[idx];
+        entries[idx] = entries[idx - 1];
+        entries[idx - 1] = temp;
+      } else if (direction === "down" && idx < entries.length - 1) {
+        const temp = entries[idx];
+        entries[idx] = entries[idx + 1];
+        entries[idx + 1] = temp;
+      }
+    } else if (typeof fromIndex === "number" && typeof toIndex === "number") {
+      if (fromIndex >= 0 && fromIndex < entries.length && toIndex >= 0 && toIndex < entries.length) {
+        const [movedItem] = entries.splice(fromIndex, 1);
+        entries.splice(toIndex, 0, movedItem);
+      }
+    } else {
+      return res.status(400).json({ error: "Parametri di riordinamento non validi." });
+    }
+
+    // Re-assign sequential order numbers
+    entries.forEach((item, index) => {
+      item.orderNumber = index + 1;
+      item.updatedAt = new Date().toISOString();
+    });
+
+    EXCEL_GERARCHIA_ENTRIES = entries;
+    saveExcelGerarchia(EXCEL_GERARCHIA_ENTRIES);
+
+    const caller = getCallerGradeAndRole(req);
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Riordinamento Righe Excel Gerarchia",
+      "SUCCESS",
+      `Riordinato il registro Excel Gerarchia (${entries.length} righe).`
+    );
+
+    res.json({
+      success: true,
+      entries: EXCEL_GERARCHIA_ENTRIES,
+      message: "Ordine delle righe aggiornato con successo.",
+    });
+  } catch (error) {
+    console.error("Error reordering excel gerarchia:", error);
+    res.status(500).json({ error: "Errore durante il riordinamento delle righe." });
+  }
+});
+
+// DELETE row from Excel Gerarchia
+app.delete("/api/admin/excel-gerarchia/:id", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  try {
+    const { id } = req.params;
+    let entries = buildAndSyncExcelGerarchia();
+    const target = entries.find((e) => e.id === id);
+
+    if (!target) {
+      return res.status(404).json({ error: "Riga non trovata nel registro." });
+    }
+
+    const caller = getCallerGradeAndRole(req);
+    EXCEL_GERARCHIA_ENTRIES = entries.filter((e) => e.id !== id);
+    saveExcelGerarchia(EXCEL_GERARCHIA_ENTRIES);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Eliminazione Riga Excel Gerarchia",
+      "SUCCESS",
+      `Rimossa riga per ${target.fullName} dal registro Excel Gerarchia.`
+    );
+
+    res.json({
+      success: true,
+      message: `Riga per ${target.fullName} rimossa dal registro Excel Gerarchia.`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante l'eliminazione della riga." });
+  }
+});
+
+// POST Reset from Official Google Sheet Seed (All 36 Members)
+app.post("/api/admin/excel-gerarchia/reset-from-sheet", requireDirettoreGeneraleOrAdmin, async (req, res) => {
+  try {
+    const liveSeed = await fetchGoogleSheetCsvLive();
+    const entries = buildAndSyncExcelGerarchia(true, liveSeed);
+    const caller = getCallerGradeAndRole(req);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Reset Excel Gerarchia da Foglio Ufficiale",
+      "SUCCESS",
+      `Ripristinati e sincronizzati tutti i ${entries.length} membri dal foglio ufficiale Excel.`
+    );
+
+    res.json({
+      success: true,
+      count: entries.length,
+      entries,
+      message: `Tutti i ${entries.length} membri del foglio Excel ufficiale sono stati ripristinati e sincronizzati con successo.`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante il ripristino dal foglio ufficiale." });
+  }
+});
+
+// POST Force Sync Excel Gerarchia with Candidature and CDA
+app.post("/api/admin/excel-gerarchia/sync", requireDirettoreGeneraleOrAdmin, async (req, res) => {
+  try {
+    const liveSeed = await fetchGoogleSheetCsvLive();
+    const entries = buildAndSyncExcelGerarchia(true, liveSeed);
+    const caller = getCallerGradeAndRole(req);
+
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Sincronizzazione Excel Gerarchia",
+      "SUCCESS",
+      `Sincronizzazione completata (${entries.length} membri verificati con Google Sheet e CDA).`
+    );
+
+    res.json({
+      success: true,
+      count: entries.length,
+      entries,
+      message: `Excel Gerarchia sincronizzato con successo con Google Sheet e delibere CDA (${entries.length} membri totali).`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: "Errore durante la sincronizzazione con candidature e CDA." });
+  }
+});
+
+// GET Google Sheets Sync Configuration
+app.get("/api/admin/excel-gerarchia/google-config", requireDirettoreGeneraleOrAdmin, (req, res) => {
+  res.json({
+    success: true,
+    clientId: process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_OAUTH_CLIENT_ID || "",
+    defaultSpreadsheetId: "1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258",
+    defaultSheetName: "Foglio1",
+    sheetUrl: "https://docs.google.com/spreadsheets/d/1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258/edit",
+  });
+});
+
+// POST Push All Table Rows to Google Sheets via Google Sheets API (v4)
+app.post("/api/admin/excel-gerarchia/push-to-google-sheet", requireDirettoreGeneraleOrAdmin, async (req, res) => {
+  try {
+    const authHeader = req.headers["x-google-token"] || req.headers["authorization"];
+    const bodyToken = req.body?.googleToken;
+    let googleAccessToken = "";
+
+    if (typeof req.headers["x-google-token"] === "string" && req.headers["x-google-token"].length > 10) {
+      googleAccessToken = req.headers["x-google-token"];
+    } else if (typeof bodyToken === "string" && bodyToken.length > 10) {
+      googleAccessToken = bodyToken;
+    } else if (typeof authHeader === "string" && authHeader.startsWith("Bearer ya29.")) {
+      googleAccessToken = authHeader.replace("Bearer ", "").trim();
+    }
+
+    const spreadsheetId =
+      (req.body?.spreadsheetId as string) || "1dBCewK_cvU1HeBLrCtH1-HbnsIWW1050DU0332Bd258";
+    const sheetName = (req.body?.sheetName as string) || "Foglio1";
+
+    if (!googleAccessToken) {
+      return res.status(401).json({
+        error: "Token di autorizzazione Google mancante. Clicca su 'Accedi con Google' per autorizzare la sincronizzazione sul tuo Foglio Google.",
+        needsGoogleAuth: true,
+      });
+    }
+
+    const auth = new google.auth.OAuth2();
+    auth.setCredentials({ access_token: googleAccessToken });
+    const sheets = google.sheets({ version: "v4", auth });
+
+    const entries = buildAndSyncExcelGerarchia();
+
+    // Prepare standard headers + entries formatted matching the Google Sheet columns
+    const headers = [
+      "Nome e Cognome",
+      "Ruolo Attuale",
+      "Nuovo Grado",
+      "CDA",
+      "DGS",
+      "Assenze/Ferie",
+      "Note",
+    ];
+
+    const values = [
+      headers,
+      ...entries.map((entry) => [
+        entry.fullName || "",
+        entry.currentRole || "",
+        entry.newRole || "",
+        entry.cdaRole || "",
+        entry.dgsRole || "",
+        entry.leaveStatus || "",
+        entry.notes || "",
+      ]),
+    ];
+
+    // Clear range first up to 100 rows to ensure clean overwrite
+    try {
+      await sheets.spreadsheets.values.clear({
+        spreadsheetId,
+        range: `${sheetName}!A1:G150`,
+      });
+    } catch (clearErr) {
+      console.warn("Avviso pulizia range precedente:", clearErr);
+    }
+
+    // Write updated values
+    const result = await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `${sheetName}!A1:G${values.length}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values,
+      },
+    });
+
+    const caller = getCallerGradeAndRole(req);
+    addAccessLog(
+      req,
+      caller.username,
+      caller.roleName,
+      "-",
+      "Sincronizzazione su Google Sheets",
+      "SUCCESS",
+      `Sincronizzate con successo ${values.length - 1} righe sul foglio Google online (${spreadsheetId}).`
+    );
+
+    res.json({
+      success: true,
+      updatedRows: values.length - 1,
+      spreadsheetId,
+      updatedRange: result.data.updatedRange,
+      message: `Sincronizzazione completata con successo! Tutte le ${values.length - 1} righe, ruoli e note sono stati aggiornati sul tuo foglio Google online.`,
+    });
+  } catch (error: any) {
+    console.error("Errore durante push su Google Sheet:", error);
+    const googleErrMsg =
+      error?.response?.data?.error?.message ||
+      error?.message ||
+      "Errore durante l'aggiornamento del foglio Google Sheets.";
+
+    if (error?.status === 401 || error?.response?.status === 401) {
+      return res.status(401).json({
+        error: "Sessione Google scaduta o non autorizzata. Ricollega il tuo account Google.",
+        needsGoogleAuth: true,
+      });
+    }
+
+    res.status(500).json({
+      error: `Errore Google Sheets: ${googleErrMsg}`,
+      details: googleErrMsg,
+    });
+  }
+});
+
+// GET Export formatted CSV for Excel Gerarchia based on active columns
+app.get("/api/admin/excel-gerarchia/export", (req, res) => {
+  try {
+    const token = (req.query.token as string) || "";
+    const caller = getCallerGradeAndRole({
+      headers: { authorization: `Bearer ${token}` },
+    } as any);
+
+    if (!caller.isMaster && !caller.isAdminPassword && caller.grade < 20 && !(caller.roleName || "").toLowerCase().includes("direttore generale")) {
+      return res.status(403).send("Accesso non autorizzato.");
+    }
+
+    const entries = buildAndSyncExcelGerarchia();
+    const columns = loadExcelColumns().filter((c) => c.visible);
+
+    const headers = columns.map((c) => `"${c.label.replace(/"/g, '""')}"`);
+    const rows = entries.map((e, idx) => {
+      return columns.map((col) => {
+        let val = "";
+        if (col.key === "orderNumber") val = String(e.orderNumber || idx + 1);
+        else if (col.key === "fullName") val = e.fullName || "";
+        else if (col.key === "currentRole") val = e.currentRole || "";
+        else if (col.key === "newRole") val = e.newRole || "";
+        else if (col.key === "cdaRole") val = e.cdaRole || "";
+        else if (col.key === "dgsRole") val = e.dgsRole || "";
+        else if (col.key === "leaveStatus") val = e.leaveStatus || "";
+        else if (col.key === "notes") val = e.notes || e.sourceDetails || "";
+        else if (col.key === "status") val = e.status || "";
+        else if (e.customFields && e.customFields[col.key]) {
+          val = e.customFields[col.key];
+        }
+        return `"${val.replace(/"/g, '""')}"`;
+      });
+    });
+
+    const csvContent = [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="Excel_Gerarchia_EMS_${new Date().toISOString().split("T")[0]}.csv"`);
+    res.send("\uFEFF" + csvContent);
+  } catch (error) {
+    console.error("Error exporting Excel Gerarchia CSV:", error);
+    res.status(500).send("Errore durante l'esportazione.");
+  }
+});
+
 
 // --- CANDIDATURA API ENDPOINTS ---
+
 
 // Public / Token-Accessible submission endpoint for Candidatura
 app.post("/api/candidature", (req, res) => {
@@ -2076,7 +3568,13 @@ app.post("/api/candidature", (req, res) => {
 
     const cleanFullName = sanitizeString(fullName, 100);
     const cleanCurrentRole = sanitizeString(currentRole, 100);
-    const cleanDesiredRole = sanitizeString(desiredRole, 100);
+    const progressionMap: Record<string, string> = {
+      "Primario": "V. Primario di Reparto",
+      "V. Primario di Reparto": "Primario di Reparto",
+      "Primario di Reparto": "V. Responsabile Del Presidio",
+      "V. Responsabile Del Presidio": "Responsabile Del Presidio",
+    };
+    const cleanDesiredRole = progressionMap[cleanCurrentRole] || sanitizeString(desiredRole, 100) || "V. Primario di Reparto";
     const cleanTimeSlot = sanitizeString(timeSlot, 150);
     const cleanOfferText = typeof offerText === "string" ? offerText.trim() : "";
 
@@ -2292,12 +3790,12 @@ function getCdaCallerInfo(req: express.Request) {
 
   const caller = getCallerGradeAndRole(req);
 
-  if (caller.isMaster || caller.isAdminPassword || userToken.toUpperCase() === "EMS-2410PROP") {
+  if (caller.isMaster || caller.isAdminPassword || userToken.toUpperCase() === "EMS-2410PROP" || isHighLevelOwnerCaller(caller)) {
     return {
       isCdaMember: true,
       token: userToken || "EMS-2410PROP",
       username: caller.username !== "Sconosciuto" ? caller.username : "Proprietario Master",
-      roleName: "Proprietario (Master)",
+      roleName: caller.roleName && caller.roleName !== "Sconosciuto" ? caller.roleName : "Proprietario (Master)",
       cdaRank: 100,
       isMaster: true,
       canReinderizzare: true,
@@ -2388,29 +3886,37 @@ function getCdaCallerInfo(req: express.Request) {
     ? false
     : (session?.hasCdaAccess === true) || rank >= 1 || isCdaRoleName(roleName) || (hierarchyMember && isCdaRoleName(hierarchyMember.roleName));
 
+  const isOwnerMaster = !!(
+    caller.isMaster ||
+    isHighLevelOwnerCaller(caller) ||
+    (roleName || "").toLowerCase().includes("proprietario") ||
+    rank >= 99
+  );
+
   return {
-    isCdaMember: !!isCda,
+    isCdaMember: !!isCda || isOwnerMaster,
     token: userToken,
     username,
     roleName,
-    cdaRank: rank,
-    isMaster: false,
+    cdaRank: isOwnerMaster ? 100 : rank,
+    isMaster: isOwnerMaster,
     isTestToken: !!session?.isTestToken,
     expiresAt: session?.expiresAt,
-    canReinderizzare: isCda && rank >= 2,
-    canDirectReview: isCda && rank >= 2,
-    canDirectApprove: isCda && rank >= 3,
-    canDirectReturn: isCda && rank >= 2,
-    canVote: isCda && rank >= 1,
-    canPreventiveAccept: isCda && rank >= 3,
-    canResolveTie: isCda && rank >= 3,
-    isReasonOptional: rank >= 5,
+    canReinderizzare: isOwnerMaster || (isCda && rank >= 2),
+    canDirectReview: isOwnerMaster,
+    canDirectApprove: isOwnerMaster,
+    canDirectReturn: isOwnerMaster,
+    canVote: isOwnerMaster || (isCda && rank >= 1),
+    canPreventiveAccept: isOwnerMaster,
+    canResolveTie: isOwnerMaster,
+    isReasonOptional: isOwnerMaster,
   };
 }
 
 // Get candidatures for CDA Portal with auto-processing of expired 24h timers
-app.get("/api/cda/candidature", (req, res) => {
+app.get("/api/cda/candidature", async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     // Process any expired timers and log them
     processExpiredCdaTimers((cand, outcome, summary) => {
       addAccessLog(
@@ -2506,7 +4012,7 @@ app.post("/api/cda/render/:id", (req, res) => {
   }
 });
 
-// Direct Review: Accept or Send Back/Reject (Segretario CDA and above)
+// Direct Review: Accept or Send Back/Reject (Solo Key Proprietario)
 app.post("/api/cda/direct-review/:id", (req, res) => {
   try {
     const rawId = req.params.id || "";
@@ -2515,15 +4021,9 @@ app.post("/api/cda/direct-review/:id", (req, res) => {
     const cleanReason = reason ? sanitizeString(reason, 500).trim() : "";
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canDirectReview) {
+    if (!info.isCdaMember || !info.canDirectReview || !info.isMaster) {
       return res.status(403).json({
-        error: "Permesso negato. Solo il Segretario CDA ed i gradi superiori possono gestire o rimandare indietro direttamente la candidatura.",
-      });
-    }
-
-    if (action === "APPROVE" && !info.canDirectApprove && info.cdaRank < 3 && !info.isMaster) {
-      return res.status(403).json({
-        error: "Permesso negato: Il Segretario CDA non può accettare direttamente le candidature! Può solo inviarle a votazione CDA o annullarle (rimandandole indietro al mittente).",
+        error: "Permesso negato: L'accettazione o l'annullamento/rifiuto diretto delle candidature CDA è riservato esclusivamente ai Proprietari (Key Proprietario).",
       });
     }
 
@@ -2587,7 +4087,7 @@ app.post("/api/cda/vote/:id", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
-    const { decision, reason } = req.body; // decision: "FAVOREVOLE" | "CONTRARIO" | "ASTENUTO"
+    const { decision, reason, voterName } = req.body; // decision: "FAVOREVOLE" | "CONTRARIO" | "ASTENUTO"
     const cleanReason = reason ? sanitizeString(reason, 300).trim() : "";
     const info = getCdaCallerInfo(req);
 
@@ -2617,12 +4117,16 @@ app.post("/api/cda/vote/:id", (req, res) => {
       return res.status(400).json({ error: "Il timer di 24 ore per questa votazione è scaduto. Votazione chiusa." });
     }
 
+    const effectiveVoterName = (info.isMaster && voterName && typeof voterName === "string" && voterName.trim().length > 0)
+      ? sanitizeString(voterName, 100)
+      : info.username;
+
     const existingVotes = target.cdaData.votes || {};
-    const voterKey = info.token || info.username;
+    const voterKey = effectiveVoterName.toLowerCase().replace(/\s+/g, "_");
 
     const voteEntry = {
-      voterToken: info.token,
-      voterName: info.username,
+      voterToken: info.token || voterKey,
+      voterName: effectiveVoterName,
       voterRole: info.roleName,
       decision: decision as "FAVOREVOLE" | "CONTRARIO" | "ASTENUTO",
       timestamp: new Date().toISOString(),
@@ -2637,19 +4141,19 @@ app.post("/api/cda/vote/:id", (req, res) => {
 
     addAccessLog(
       req,
-      info.username,
+      effectiveVoterName,
       info.roleName,
       info.token || "-",
       "Voto Espresso in CDA",
       "SUCCESS",
-      `Voto '${decision}' espresso da ${info.username} (${info.roleName}) per la candidatura di ${target.fullName}.`,
+      `Voto '${decision}' espresso da ${effectiveVoterName} (${info.roleName}) per la candidatura di ${target.fullName}.`,
       "CDA"
     );
 
     res.json({
       success: true,
       candidatura: updated,
-      message: `Il tuo voto (${decision}) è stato registrato con successo!`,
+      message: `Il voto (${decision}) per ${effectiveVoterName} è stato registrato con successo!`,
     });
   } catch (error) {
     console.error("Error voting in CDA:", error);
@@ -2657,7 +4161,7 @@ app.post("/api/cda/vote/:id", (req, res) => {
   }
 });
 
-// Close Voting Preventively before 24h timer ends (Vice Presidente CDA and above)
+// Close Voting Preventively before 24h timer ends (Solo Key Proprietario)
 app.post("/api/cda/preventive-accept/:id", (req, res) => {
   try {
     const rawId = req.params.id || "";
@@ -2666,9 +4170,9 @@ app.post("/api/cda/preventive-accept/:id", (req, res) => {
     const cleanReason = reason ? sanitizeString(reason, 500).trim() : "";
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canPreventiveAccept) {
+    if (!info.isCdaMember || !info.canPreventiveAccept || !info.isMaster) {
       return res.status(403).json({
-        error: "Permesso negato. La chiusura preventiva della votazione prima delle 24h è riservata dal grado di Vice Presidente CDA in su (Vice Presidente, Presidente, Consigliere Finale, Proprietario Master).",
+        error: "Permesso negato. La chiusura preventiva e la risoluzione anticipata della votazione per le candidature sono riservate esclusivamente ai Proprietari (Key Proprietario).",
       });
     }
 
@@ -2755,7 +4259,7 @@ app.post("/api/cda/preventive-accept/:id", (req, res) => {
   }
 });
 
-// Resolve Tie after 24h timer ends (Vice Presidente CDA and above)
+// Resolve Tie after 24h timer ends (Solo Key Proprietario)
 app.post("/api/cda/resolve-tie/:id", (req, res) => {
   try {
     const rawId = req.params.id || "";
@@ -2764,9 +4268,9 @@ app.post("/api/cda/resolve-tie/:id", (req, res) => {
     const cleanReason = reason ? sanitizeString(reason, 500).trim() : "";
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canResolveTie) {
+    if (!info.isCdaMember || !info.canResolveTie || !info.isMaster) {
       return res.status(403).json({
-        error: "Permesso negato. In caso di parità, la risoluzione è riservata dal grado di Vice Presidente CDA in su.",
+        error: "Permesso negato. In caso di parità, la decisione finale (accettazione o annullamento) è riservata esclusivamente ai Proprietari (Key Proprietario).",
       });
     }
 
@@ -2878,8 +4382,9 @@ app.get("/api/cda/proposals/lookup-cosigner", (req, res) => {
 });
 
 // Get CDA Proposals with auto timer processing
-app.get("/api/cda/proposals", (req, res) => {
+app.get("/api/cda/proposals", async (req, res) => {
   try {
+    await syncAllDataWithFirestore();
     processExpiredCdaProposalTimers((prop, outcome, summary) => {
       addAccessLog(
         req,
@@ -2933,28 +4438,58 @@ app.post("/api/cda/proposals", (req, res) => {
       targetEmployeeName,
       targetCurrentRole,
       targetProposedRole,
+      reinstatementVotingRoles,
       coSigners,
     } = req.body;
 
-    if (!type || (type !== "GENERICA" && type !== "PROMOZIONE")) {
-      return res.status(400).json({ error: "Tipo di proposta non valido (deve essere GENERICA o PROMOZIONE)." });
+    if (!type || (type !== "GENERICA" && type !== "PROMOZIONE" && type !== "REINTEGRO")) {
+      return res.status(400).json({ error: "Tipo di proposta non valido (deve essere GENERICA, PROMOZIONE o REINTEGRO)." });
     }
 
     const cleanProposer = sanitizeString(proposerName, 150) || info.username;
     const cleanTitle = sanitizeString(title, 250);
     const cleanDesc = sanitizeString(description, 5000);
 
-    if (!cleanTitle || cleanTitle.length < 3) {
-      return res.status(400).json({ error: "Il titolo/oggetto della proposta è obbligatorio (almeno 3 caratteri)." });
-    }
-    if (!cleanDesc || cleanDesc.length < 5) {
-      return res.status(400).json({ error: "I dettagli/motivazione della proposta sono obbligatori." });
+    if (!cleanDesc || cleanDesc.trim().length < 5) {
+      return res.status(400).json({ error: "La motivazione e i dettagli della proposta sono obbligatori (almeno 5 caratteri)." });
     }
 
     if (type === "PROMOZIONE") {
       if (!targetEmployeeName || !targetProposedRole) {
         return res.status(400).json({ error: "Per una proposta di promozione occorre specificare il nome del dipendente e il ruolo proposto." });
       }
+    }
+
+    let cleanVotingRoles: string[] = [];
+    if (type === "REINTEGRO") {
+      if (!targetEmployeeName || !targetEmployeeName.trim()) {
+        return res.status(400).json({ error: "Per una proposta di reintegro occorre specificare il nome della persona da reintegrare." });
+      }
+      if (!targetCurrentRole || !targetCurrentRole.trim()) {
+        return res.status(400).json({ error: "Per una proposta di reintegro occorre specificare il ruolo che la persona ricopriva in precedenza." });
+      }
+
+      if (Array.isArray(reinstatementVotingRoles) && reinstatementVotingRoles.length > 0) {
+        cleanVotingRoles = reinstatementVotingRoles.map((r: any) => sanitizeString(r, 100)).filter(Boolean);
+      } else if (targetProposedRole) {
+        cleanVotingRoles = targetProposedRole.split(/[/,]/).map((s: string) => sanitizeString(s.trim(), 100)).filter(Boolean);
+      }
+
+      if (cleanVotingRoles.length === 0) {
+        return res.status(400).json({ error: "Per una proposta di reintegro occorre indicare almeno un ruolo tra cui votare." });
+      }
+    }
+
+    const finalTitle = cleanTitle || (
+      type === "REINTEGRO"
+        ? `Proposta di Reintegro per ${sanitizeString(targetEmployeeName, 150)}`
+        : type === "PROMOZIONE"
+        ? `Proposta di Promozione per ${sanitizeString(targetEmployeeName, 150)}`
+        : "Nuova Proposta CDA"
+    );
+
+    if (!finalTitle || finalTitle.length < 3) {
+      return res.status(400).json({ error: "Il titolo/oggetto della proposta è obbligatorio (almeno 3 caratteri)." });
     }
 
     const cleanCoSigners = Array.isArray(coSigners)
@@ -2973,11 +4508,14 @@ app.post("/api/cda/proposals", (req, res) => {
       proposerName: cleanProposer,
       proposerRole: info.roleName,
       coSigners: cleanCoSigners,
-      title: cleanTitle,
+      title: finalTitle,
       description: cleanDesc,
       targetEmployeeName: targetEmployeeName ? sanitizeString(targetEmployeeName, 150) : undefined,
       targetCurrentRole: targetCurrentRole ? sanitizeString(targetCurrentRole, 150) : undefined,
-      targetProposedRole: targetProposedRole ? sanitizeString(targetProposedRole, 150) : undefined,
+      targetProposedRole: type === "REINTEGRO" && cleanVotingRoles.length > 0
+        ? cleanVotingRoles.join(" / ")
+        : (targetProposedRole ? sanitizeString(targetProposedRole, 150) : undefined),
+      reinstatementVotingRoles: cleanVotingRoles.length > 0 ? cleanVotingRoles : undefined,
       status: "PENDING",
       submittedAt: new Date().toISOString(),
       token: info.token,
@@ -3074,7 +4612,7 @@ app.post("/api/cda/proposals/:id/vote", (req, res) => {
       return res.status(403).json({ error: "Permesso di voto negato nella Sezione CDA." });
     }
 
-    const { decision, reason } = req.body;
+    const { decision, reason, chosenRole, voterName } = req.body;
     if (!decision || (decision !== "FAVOREVOLE" && decision !== "CONTRARIO" && decision !== "ASTENUTO")) {
       return res.status(400).json({ error: "Scelta di voto non valida." });
     }
@@ -3095,28 +4633,43 @@ app.post("/api/cda/proposals/:id/vote", (req, res) => {
       return res.status(400).json({ error: "Il periodo di votazione di 24 ore è scaduto." });
     }
 
+    let cleanChosenRole: string | undefined = undefined;
+    if (target.type === "REINTEGRO" && decision === "FAVOREVOLE") {
+      const roleStr = chosenRole ? sanitizeString(chosenRole, 100).trim() : "";
+      if (!roleStr) {
+        return res.status(400).json({ error: "Per votare favorevolmente a un reintegro è obbligatorio selezionare il grado da assegnare." });
+      }
+      cleanChosenRole = roleStr;
+    }
+
+    const effectiveVoterName = (info.isMaster && voterName && typeof voterName === "string" && voterName.trim().length > 0)
+      ? sanitizeString(voterName, 100)
+      : info.username;
+
     const currentVotes = { ...(target.cdaData.votes || {}) };
-    const userVoteKey = info.username.toLowerCase().replace(/\s+/g, "_");
+    const userVoteKey = effectiveVoterName.toLowerCase().replace(/\s+/g, "_");
 
     currentVotes[userVoteKey] = {
       voterToken: info.token || userVoteKey,
-      voterName: info.username,
+      voterName: effectiveVoterName,
       voterRole: info.roleName,
       decision,
+      chosenRole: cleanChosenRole,
       reason: reason ? sanitizeString(reason, 1000) : undefined,
       timestamp: now.toISOString(),
     };
 
     const updated = updateCdaProposalCda(target.id, { votes: currentVotes });
 
+    const roleInfo = cleanChosenRole ? ` (Grado votato: ${cleanChosenRole})` : "";
     addAccessLog(
       req,
-      info.username,
+      effectiveVoterName,
       info.roleName,
       info.token || "-",
       "Voto Proposta CDA Registrato",
       "SUCCESS",
-      `Espresso voto '${decision}' per la proposta CDA "${target.title}" da parte di ${info.username} (${info.roleName}).`,
+      `Espresso voto '${decision}'${roleInfo} per la proposta CDA "${target.title}" da parte di ${effectiveVoterName} (${info.roleName}).`,
       "CDA"
     );
 
@@ -3127,36 +4680,51 @@ app.post("/api/cda/proposals/:id/vote", (req, res) => {
   }
 });
 
-// Direct Approve Proposal
+// Direct Approve Proposal (Solo Key Proprietario)
 app.post("/api/cda/proposals/:id/direct-approve", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || (!info.canDirectApprove && !info.canDirectReview)) {
-      return res.status(403).json({ error: "Non hai i permessi di grado CDA per approvare direttamente questa proposta." });
+    if (!info.isCdaMember || !info.canDirectApprove || !info.isMaster) {
+      return res.status(403).json({ error: "Permesso negato: L'accettazione/approvazione diretta delle proposte CDA è riservata esclusivamente ai Proprietari (Key Proprietario)." });
     }
 
-    const { reason } = req.body;
+    const { reason, chosenRole } = req.body;
     const cleanReason = reason ? sanitizeString(reason, 1000) : "";
 
     const list = getCdaProposals();
     const target = list.find((p) => p.id === id);
     if (!target) return res.status(404).json({ error: "Proposta non trovata." });
 
+    let cleanChosenRole: string | undefined = undefined;
+    if (target.type === "REINTEGRO") {
+      const roleStr = chosenRole ? sanitizeString(chosenRole, 100).trim() : "";
+      if (!roleStr) {
+        return res.status(400).json({ error: "Per approvare direttamente un reintegro occorre selezionare il grado con cui reintegrare la persona." });
+      }
+      cleanChosenRole = roleStr;
+    }
+
     const now = new Date();
+    const actionReasonText = cleanChosenRole
+      ? `Approvazione diretta reintegro al grado "${cleanChosenRole}" da ${info.username} (${info.roleName}).${cleanReason ? ` Motivo: ${cleanReason}` : ""}`
+      : (cleanReason || "Approvazione diretta da grado autorizzato CDA.");
+
     const updated = updateCdaProposalCda(
       target.id,
       {
         status: "APPROVED",
-        cdaActionReason: cleanReason || "Approvazione diretta da grado autorizzato CDA.",
+        cdaActionReason: actionReasonText,
         cdaActionBy: info.username,
         cdaActionRole: info.roleName,
         cdaActionAt: now.toISOString(),
       },
       "APPROVED",
-      info.username
+      info.username,
+      undefined,
+      cleanChosenRole ? { targetProposedRole: cleanChosenRole, finalApprovedRole: cleanChosenRole } : undefined
     );
 
     addAccessLog(
@@ -3166,7 +4734,7 @@ app.post("/api/cda/proposals/:id/direct-approve", (req, res) => {
       info.token || "-",
       "Proposta CDA Approvata Direttamente",
       "SUCCESS",
-      `Proposta CDA "${target.title}" approvata direttamente da ${info.username} (${info.roleName}).`,
+      `Proposta CDA "${target.title}" approvata direttamente da ${info.username} (${info.roleName}).${cleanChosenRole ? ` Grado Reintegro: ${cleanChosenRole}` : ""}`,
       "CDA"
     );
 
@@ -3177,15 +4745,15 @@ app.post("/api/cda/proposals/:id/direct-approve", (req, res) => {
   }
 });
 
-// Direct Return / Reject Proposal
+// Direct Return / Reject Proposal (Solo Key Proprietario)
 app.post("/api/cda/proposals/:id/direct-return", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canDirectReturn) {
-      return res.status(403).json({ error: "Non hai i permessi di grado CDA per respingere direttamente questa proposta." });
+    if (!info.isCdaMember || !info.canDirectReturn || !info.isMaster) {
+      return res.status(403).json({ error: "Permesso negato: L'annullamento o il rifiuto diretto delle proposte CDA è riservato esclusivamente ai Proprietari (Key Proprietario)." });
     }
 
     const { reason } = req.body;
@@ -3195,38 +4763,53 @@ app.post("/api/cda/proposals/:id/direct-return", (req, res) => {
     const target = list.find((p) => p.id === id);
     if (!target) return res.status(404).json({ error: "Proposta non trovata." });
 
-    deleteCdaProposal(target.id);
+    const now = new Date();
+    const actionReasonText = cleanReason || "Proposta respinta direttamente da grado autorizzato CDA.";
+
+    const updated = updateCdaProposalCda(
+      target.id,
+      {
+        status: "REJECTED",
+        cdaActionReason: actionReasonText,
+        cdaActionBy: info.username,
+        cdaActionRole: info.roleName,
+        cdaActionAt: now.toISOString(),
+      },
+      "REJECTED",
+      info.username,
+      cleanReason
+    );
 
     addAccessLog(
       req,
       info.username,
       info.roleName,
       info.token || "-",
-      "Proposta CDA Respinta ed Eliminata",
+      "Proposta CDA Respinta Direttamente",
       "SUCCESS",
-      `Proposta CDA "${target.title}" respinta ed eliminata da ${info.username} (${info.roleName}). Motivazione: ${cleanReason || "Nessuna motivazione"}`,
+      `Proposta CDA "${target.title}" respinta direttamente da ${info.username} (${info.roleName}). Motivazione: ${cleanReason || "Nessuna motivazione"}`,
       "CDA"
     );
 
-    res.json({ success: true, deleted: true, message: `Proposta CDA "${target.title}" respinta ed eliminata con successo.` });
+    res.json({ success: true, proposal: updated, message: `Proposta CDA "${target.title}" respinta e votazione chiusa con successo.` });
   } catch (error) {
     console.error("Error direct returning proposal:", error);
     res.status(500).json({ error: "Errore durante il rifiuto della proposta." });
   }
 });
 
-// Chiusura Preventiva Proposta CDA
+// Chiusura Preventiva Proposta CDA (Solo Key Proprietario)
 app.post("/api/cda/proposals/:id/preventive", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
-    const { reason } = req.body;
+    const { reason, chosenRole } = req.body;
     const cleanReason = reason ? sanitizeString(reason, 500).trim() : "";
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canPreventiveAccept) {
+    if (!info.isCdaMember || !info.canPreventiveAccept || !info.isMaster) {
       return res.status(403).json({
-        error: "Permesso negato. La chiusura preventiva della votazione della proposta è riservata dal grado di Vice Presidente CDA in su.",
+        error: "Permesso negato: La chiusura preventiva della votazione della proposta è riservata esclusivamente ai Proprietari (Key Proprietario).",
       });
     }
 
@@ -3247,9 +4830,15 @@ app.post("/api/cda/proposals/:id/preventive", (req, res) => {
     let fav = 0;
     let con = 0;
     let ast = 0;
+    const roleCounts: Record<string, number> = {};
 
     votesArr.forEach((v) => {
-      if (v.decision === "FAVOREVOLE") fav++;
+      if (v.decision === "FAVOREVOLE") {
+        fav++;
+        if (v.chosenRole) {
+          roleCounts[v.chosenRole] = (roleCounts[v.chosenRole] || 0) + 1;
+        }
+      }
       else if (v.decision === "CONTRARIO") con++;
       else if (v.decision === "ASTENUTO") ast++;
     });
@@ -3266,9 +4855,37 @@ app.post("/api/cda/proposals/:id/preventive", (req, res) => {
       newStatus = "REJECTED";
       newCdaStatus = "REJECTED";
       outcomeLabel = "RIFIUTATA";
+    } else {
+      // In case of tie or 0 votes when VP closes early
+      if (fav > 0) {
+        newStatus = "PENDING";
+        newCdaStatus = "TIE_PENDING";
+        outcomeLabel = "PARITÀ";
+      } else {
+        // Closed with 0 votes cast or 0-0
+        newStatus = "REJECTED";
+        newCdaStatus = "REJECTED";
+        outcomeLabel = "RIFIUTATA";
+      }
     }
 
-    const summaryReason = `Votazione CHIUSA PREVENTIVAMENTE da ${info.username} (${info.roleName}). Esito al momento dell'interruzione: ${outcomeLabel} (${fav} favorevoli, ${con} contrari, ${ast} astenuti su ${votesArr.length} votanti).${cleanReason ? ` Motivo: "${cleanReason}"` : ""}`;
+    let cleanChosenRole: string | undefined = undefined;
+    if (target.type === "REINTEGRO" && newCdaStatus === "APPROVED") {
+      let topRole: string | undefined = undefined;
+      let maxVotes = -1;
+      Object.entries(roleCounts).forEach(([r, count]) => {
+        if (count > maxVotes) {
+          maxVotes = count;
+          topRole = r;
+        }
+      });
+
+      const roleStr = topRole || (chosenRole ? sanitizeString(chosenRole, 100).trim() : "") || target.targetProposedRole || (target.reinstatementVotingRoles && target.reinstatementVotingRoles[0]) || "Tirocinante";
+      cleanChosenRole = roleStr;
+    }
+
+    const rolePart = cleanChosenRole ? ` (Grado reintegro assegnato: ${cleanChosenRole})` : "";
+    const summaryReason = `Votazione CHIUSA PREVENTIVAMENTE da ${info.username} (${info.roleName}). Esito al momento dell'interruzione: ${outcomeLabel}${rolePart} (${fav} favorevoli, ${con} contrari, ${ast} astenuti su ${votesArr.length} votanti).${cleanReason ? ` Motivo: "${cleanReason}"` : ""}`;
 
     const updated = updateCdaProposalCda(
       target.id,
@@ -3281,7 +4898,8 @@ app.post("/api/cda/proposals/:id/preventive", (req, res) => {
       },
       newStatus,
       info.username,
-      outcomeLabel === "RIFIUTATA" ? summaryReason : undefined
+      outcomeLabel === "RIFIUTATA" ? summaryReason : undefined,
+      cleanChosenRole ? { targetProposedRole: cleanChosenRole, finalApprovedRole: cleanChosenRole } : undefined
     );
 
     addAccessLog(
@@ -3291,14 +4909,14 @@ app.post("/api/cda/proposals/:id/preventive", (req, res) => {
       info.token || "-",
       "Chiusura Preventiva Votazione Proposta CDA",
       "SUCCESS",
-      `Votazione per la proposta "${target.title}" CHIUSA PREVENTIVAMENTE da ${info.username} (${info.roleName}). Esito: ${outcomeLabel}.`,
+      `Votazione per la proposta "${target.title}" CHIUSA PREVENTIVAMENTE da ${info.username} (${info.roleName}). Esito: ${outcomeLabel}.${cleanChosenRole ? ` Grado: ${cleanChosenRole}` : ""}`,
       "CDA"
     );
 
     res.json({
       success: true,
       proposal: updated,
-      message: `Votazione della proposta chiusa preventivamente con esito: ${outcomeLabel}.`,
+      message: `Votazione della proposta chiusa preventivamente con esito: ${outcomeLabel}.${cleanChosenRole ? ` Grado assegnato: ${cleanChosenRole}.` : ""}`,
     });
   } catch (error) {
     console.error("Error preventive closing proposal voting:", error);
@@ -3306,18 +4924,18 @@ app.post("/api/cda/proposals/:id/preventive", (req, res) => {
   }
 });
 
-// Resolve Tie for Proposal CDA
+// Resolve Tie for Proposal CDA (Solo Key Proprietario)
 app.post("/api/cda/proposals/:id/resolve-tie", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember || !info.canResolveTie) {
-      return res.status(403).json({ error: "Solo il Vice Presidente CDA o superiori possono risolvere un pareggio per le proposte CDA." });
+    if (!info.isCdaMember || !info.canResolveTie || !info.isMaster) {
+      return res.status(403).json({ error: "Permesso negato: La risoluzione della parità per le proposte CDA è riservata esclusivamente ai Proprietari (Key Proprietario)." });
     }
 
-    const { decision, reason } = req.body;
+    const { decision, reason, chosenRole } = req.body;
     if (decision !== "APPROVE" && decision !== "REJECT") {
       return res.status(400).json({ error: "Decisione di pareggio non valida (deve essere APPROVE o REJECT)." });
     }
@@ -3327,21 +4945,32 @@ app.post("/api/cda/proposals/:id/resolve-tie", (req, res) => {
     const target = list.find((p) => p.id === id);
     if (!target) return res.status(404).json({ error: "Proposta non trovata." });
 
+    let cleanChosenRole: string | undefined = undefined;
+    if (target.type === "REINTEGRO" && decision === "APPROVE") {
+      const roleStr = chosenRole ? sanitizeString(chosenRole, 100).trim() : "";
+      if (!roleStr) {
+        return res.status(400).json({ error: "Per approvare il reintegro in risoluzione di parità occorre selezionare il grado da assegnare." });
+      }
+      cleanChosenRole = roleStr;
+    }
+
     const now = new Date();
     const finalOutcome = decision === "APPROVE" ? "APPROVED" : "REJECTED";
+    const rolePart = cleanChosenRole ? ` (Grado reintegro: ${cleanChosenRole})` : "";
 
     const updated = updateCdaProposalCda(
       target.id,
       {
         status: finalOutcome,
-        cdaActionReason: `Pareggio risolto (${decision === "APPROVE" ? "APPROVATA" : "RESPINTA"}) da ${info.username}: ${cleanReason}`,
+        cdaActionReason: `Pareggio risolto (${decision === "APPROVE" ? "APPROVATA" : "RESPINTA"}${rolePart}) da ${info.username}: ${cleanReason}`,
         cdaActionBy: info.username,
         cdaActionRole: info.roleName,
         cdaActionAt: now.toISOString(),
       },
       finalOutcome,
       info.username,
-      decision === "REJECT" ? cleanReason : undefined
+      decision === "REJECT" ? cleanReason : undefined,
+      cleanChosenRole ? { targetProposedRole: cleanChosenRole, finalApprovedRole: cleanChosenRole } : undefined
     );
 
     addAccessLog(
@@ -3362,15 +4991,15 @@ app.post("/api/cda/proposals/:id/resolve-tie", (req, res) => {
   }
 });
 
-// Cancel / Withdraw CDA Proposal (by author with mandatory reason, or Master Key)
+// Cancel / Withdraw CDA Proposal (Solo Key Proprietario)
 app.post("/api/cda/proposals/:id/cancel", (req, res) => {
   try {
     const rawId = req.params.id || "";
     const id = sanitizeString(rawId, 250) || rawId.trim();
     const info = getCdaCallerInfo(req);
 
-    if (!info.isCdaMember && !info.isMaster) {
-      return res.status(403).json({ error: "Accesso riservato ai membri CDA per ritirare una proposta." });
+    if (!info.isMaster) {
+      return res.status(403).json({ error: "Permesso negato: L'annullamento o il ritiro delle proposte CDA può essere effettuato esclusivamente dai Proprietari (Key Proprietario)." });
     }
 
     const proposals = getCdaProposals();
@@ -3383,27 +5012,10 @@ app.post("/api/cda/proposals/:id/cancel", (req, res) => {
       return res.status(400).json({ error: "Impossibile ritirare una proposta già conclusa o annullata." });
     }
 
-    // Check if caller is the proposer or Master Key
-    const isProposer = (
-      (target.token && info.token && target.token.trim().toUpperCase() === info.token.trim().toUpperCase()) ||
-      (target.proposerName && info.username && target.proposerName.trim().toLowerCase() === info.username.trim().toLowerCase())
-    );
-
-    if (!info.isMaster && !isProposer) {
-      return res.status(403).json({ error: "Solo l'autore della proposta o il Proprietario Master possono ritirare questa proposta." });
-    }
-
     const { reason } = req.body;
     const cleanReason = reason ? sanitizeString(reason, 2000) : "";
 
-    // Validation: reason is mandatory for regular proposer, optional for master key
-    if (!info.isMaster) {
-      if (!cleanReason || cleanReason.trim().length < 3) {
-        return res.status(400).json({ error: "La motivazione del ritiro è obbligatoria." });
-      }
-    }
-
-    const finalReason = cleanReason || (info.isMaster ? "Ritirata da Proprietario Master" : "Ritirata dal proponente");
+    const finalReason = cleanReason || "Ritirata / Annullata da Proprietario Master";
     const updated = cancelCdaProposal(target.id, finalReason, info.username);
 
     addAccessLog(
@@ -3799,6 +5411,7 @@ app.post("/api/admin/candidates", requireAdmin, (req, res) => {
     }
 
     const newCandidate = addCandidate(roleId as RoleId, cleanName);
+    ensureTokensForCandidates();
     const caller = getCallerGradeAndRole(req);
     const actorName = (caller.username && caller.username !== "Sconosciuto") ? caller.username : (caller.reviewerName || caller.roleName);
 
@@ -3831,6 +5444,7 @@ app.post("/api/admin/candidates/bulk", requireAdmin, (req, res) => {
       .filter(n => n.length > 0);
 
     const updated = updateCandidatesBulk(validNames);
+    ensureTokensForCandidates();
     const caller = getCallerGradeAndRole(req);
     const actorName = (caller.username && caller.username !== "Sconosciuto") ? caller.username : (caller.reviewerName || caller.roleName);
 
@@ -3859,6 +5473,15 @@ app.delete("/api/admin/candidates/:id", requireAdmin, (req, res) => {
 
     const deleted = removeCandidate(id);
     if (deleted) {
+      // Clean up linked candidate token if present
+      for (const [t, u] of REGISTERED_DISCORD_USERS.entries()) {
+        if (u.candidateId === id) {
+          REGISTERED_DISCORD_USERS.delete(t);
+          deleteTokenFirestore(t);
+        }
+      }
+      saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+      ensureTokensForCandidates();
       addAccessLog(
         req,
         actorName,
@@ -3897,6 +5520,7 @@ app.put("/api/admin/candidates/:id", requireAdmin, (req, res) => {
 
     const updated = updateCandidate(id, cleanName, roleId as RoleId);
     if (updated) {
+      ensureTokensForCandidates();
       addAccessLog(
         req,
         actorName,
@@ -3917,14 +5541,15 @@ app.put("/api/admin/candidates/:id", requireAdmin, (req, res) => {
 });
 
 // Update settings and optionally password
-app.post("/api/admin/settings", requireAdmin, (req, res) => {
+app.post("/api/admin/settings", requireAdmin, async (req, res) => {
   try {
+    await syncAllDataWithFirestore(true);
     const { title, description, votingActive, allowMultipleSelection, requireAllRoles, newPassword, newEmergencyPassword } = req.body;
     
     const cleanTitle = typeof title === "string" ? sanitizeString(title, 150) : undefined;
     const cleanDesc = typeof description === "string" ? sanitizeString(description, 500) : undefined;
 
-    const updated = updateSettings({
+    const updated = await updateSettings({
       title: cleanTitle,
       description: cleanDesc,
       votingActive: typeof votingActive === "boolean" ? votingActive : undefined,
@@ -3937,7 +5562,7 @@ app.post("/api/admin/settings", requireAdmin, (req, res) => {
       if (cleanPwd.length < 6) {
         return res.status(400).json({ error: "La nuova password deve contenere almeno 6 caratteri." });
       }
-      updateAdminPassword(cleanPwd);
+      await updateAdminPassword(cleanPwd);
     }
 
     if (newEmergencyPassword && typeof newEmergencyPassword === "string" && newEmergencyPassword.trim().length > 0) {
@@ -3945,7 +5570,7 @@ app.post("/api/admin/settings", requireAdmin, (req, res) => {
       if (cleanEmergencyPwd.length < 6) {
         return res.status(400).json({ error: "La password di sblocco d'emergenza deve contenere almeno 6 caratteri." });
       }
-      updateEmergencyPassword(cleanEmergencyPwd);
+      await updateEmergencyPassword(cleanEmergencyPwd);
     }
 
     const caller = getCallerGradeAndRole(req);
@@ -4003,6 +5628,59 @@ app.delete("/api/admin/votes/:id", requireAdmin, (req, res) => {
     }
   } catch (error) {
     res.status(500).json({ error: "Errore durante l'eliminazione del voto." });
+  }
+});
+
+// Export employee tokens as Excel CSV (Restricted STRICTLY to Master Key)
+app.get("/api/admin/export/employee-tokens", async (req, res) => {
+  try {
+    await syncAllDataWithFirestore(true);
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader && authHeader.startsWith("Bearer ")
+      ? authHeader.substring(7).trim().toUpperCase()
+      : "";
+    const queryToken = (req.query.token as string || "").trim().toUpperCase();
+    const token = bearerToken || queryToken;
+
+    const session = token ? ACTIVE_SESSIONS.get(token) : undefined;
+    const isMasterToken = token === MASTER_SECRET_TOKEN.toUpperCase();
+    const isMasterSession = isMasterToken || (session && String(session.employeeRoleName || "").toLowerCase().includes("proprietario"));
+
+    if (!isMasterSession) {
+      return res.status(403).send("Accesso negato. L'esportazione in Excel dei token dei ragazzi è riservata esclusivamente all'accesso con MASTER KEY.");
+    }
+
+    const tokensList = Array.from(REGISTERED_DISCORD_USERS.values())
+      .filter((u) => u.token.toUpperCase() !== MASTER_SECRET_TOKEN.toUpperCase() && !u.isMaster)
+      .sort((a, b) => {
+        const gradeA = getUserEffectiveGrade(a);
+        const gradeB = getUserEffectiveGrade(b);
+        if (gradeB !== gradeA) {
+          return gradeB - gradeA;
+        }
+        return (a.username || "").localeCompare(b.username || "");
+      });
+
+    // Exactly 3 requested columns: Nome e Cognome, Grado, Token
+    const header = ["Nome e Cognome", "Grado", "Token"];
+
+    const rows = tokensList.map((emp) => {
+      const fullName = sanitizeForCsv(emp.username || "");
+      const gradeName = sanitizeForCsv(emp.roleName || "");
+      const tokenValue = sanitizeForCsv(emp.token || "");
+      return [fullName, gradeName, tokenValue]
+        .map((cell) => `"${(cell || "").replace(/"/g, '""')}"`)
+        .join(";");
+    });
+
+    const csvContent = [header.join(";"), ...rows].join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", "attachment; filename=token_ragazzi_ems.csv");
+    res.send("\uFEFF" + csvContent);
+  } catch (error) {
+    console.error("Errore durante l'esportazione dei token:", error);
+    res.status(500).send("Errore del server durante l'esportazione dei token.");
   }
 });
 
@@ -4694,73 +6372,225 @@ app.get("/api/notifications", (req, res) => {
   }
 });
 
-async function startServer() {
-  // Sync state from Cloud Firestore
-  await syncFromFirestore();
+let lastGlobalSyncTimestamp = 0;
+let isGlobalSyncInProgress = false;
 
-  // Sync employee tokens and access logs from Cloud Firestore
-  const cloudTokensAndLogs = await syncTokensAndLogsFirestore();
-  if (cloudTokensAndLogs.tokens && cloudTokensAndLogs.tokens.length > 0) {
-    cloudTokensAndLogs.tokens.forEach((t) => {
-      if (t.token) REGISTERED_DISCORD_USERS.set(t.token.toUpperCase(), t);
-    });
-  }
+export async function syncAllDataWithFirestore(force = false) {
+  if (isGlobalSyncInProgress || isFirestoreQuotaExhausted()) return;
+  const now = Date.now();
+  if (!force && now - lastGlobalSyncTimestamp < 15000) return;
+  isGlobalSyncInProgress = true;
 
-  // Sync revoked tokens from Cloud Firestore and remove them from active tokens map
-  const cloudRevoked = await syncRevokedTokensFirestore();
-  if (cloudRevoked && cloudRevoked.length > 0) {
-    cloudRevoked.forEach((r) => {
-      if (r.token) REVOKED_TOKENS.set(r.token.toUpperCase(), r);
-    });
-    saveRevokedTokens(REVOKED_TOKENS);
-  }
+  try {
+    // 1. Sync primary database schema (candidates, votes, candidature, cdaProposals, gameScores, etc.)
+    await syncFromFirestore();
 
-  // Remove any revoked tokens from memory map
-  for (const rKey of REVOKED_TOKENS.keys()) {
-    REGISTERED_DISCORD_USERS.delete(rKey);
-  }
-  if (cloudTokensAndLogs.logs && cloudTokensAndLogs.logs.length > 0) {
-    const existingIds = new Set(ACCESS_LOGS.map((l) => l.id));
-    cloudTokensAndLogs.logs.forEach((l) => {
-      if (l.id && !existingIds.has(l.id)) {
-        ACCESS_LOGS.push(l);
+    // 2. Sync permanently purged tokens from Cloud Firestore
+    const cloudPurged = await syncPurgedTokensFirestore();
+    if (cloudPurged && Array.isArray(cloudPurged)) {
+      cloudPurged.forEach((t) => {
+        if (t) PURGED_TOKENS.add(t.toUpperCase());
+      });
+      savePurgedTokens(PURGED_TOKENS);
+    }
+    const cloudPurgedSet = new Set((cloudPurged || []).map((t) => t.toUpperCase()));
+    for (const pKey of PURGED_TOKENS) {
+      if (!cloudPurgedSet.has(pKey)) {
+        await savePurgedTokenFirestore(pKey);
       }
-    });
-    ACCESS_LOGS.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-    saveAccessLogs(ACCESS_LOGS);
-  }
+    }
 
-  // Ensure tokens exist for all candidates organized by role hierarchy
-  ensureTokensForCandidates();
+    // 3. Sync revoked tokens from Cloud Firestore (merge union, never wipe local revocations)
+    const cloudRevoked = await syncRevokedTokensFirestore();
+    if (cloudRevoked && Array.isArray(cloudRevoked)) {
+      cloudRevoked.forEach((r) => {
+        if (r && r.token) REVOKED_TOKENS.set(r.token.toUpperCase(), r);
+      });
+      saveRevokedTokens(REVOKED_TOKENS);
+    }
+    // Push any local revoked token to Cloud Firestore
+    const cloudRevokedTokens = new Set((cloudRevoked || []).map((r) => r?.token?.toUpperCase()).filter(Boolean));
+    for (const [rKey, rVal] of REVOKED_TOKENS.entries()) {
+      if (!cloudRevokedTokens.has(rKey)) {
+        await saveRevokedTokenFirestore(rVal);
+      }
+    }
 
-  // Sync hierarchy members from Cloud Firestore
-  const cloudMembers = await syncHierarchyMembersFirestore();
-  if (cloudMembers && cloudMembers.length > 0) {
-    HIERARCHY_MEMBERS = cloudMembers;
-  } else {
+    // Build comprehensive revoked & purged sets
+    const revokedTokensSet = new Set<string>();
+    const revokedUsernames = new Set<string>();
+    const revokedCandIds = new Set<string>();
+    for (const pKey of PURGED_TOKENS) {
+      revokedTokensSet.add(pKey.toUpperCase());
+    }
+    for (const [rKey, r] of REVOKED_TOKENS.entries()) {
+      revokedTokensSet.add(rKey.toUpperCase());
+      if (r.token) revokedTokensSet.add(r.token.toUpperCase());
+      if (r.username) revokedUsernames.add(r.username.trim().toLowerCase());
+      if (r.candidateId) revokedCandIds.add(r.candidateId);
+    }
+
+    // 4. Sync employee tokens and access logs from Cloud Firestore
+    const cloudTokensAndLogs = await syncTokensAndLogsFirestore();
+    const cloudTokenKeys = new Set<string>();
+
+    if (cloudTokensAndLogs.tokens && cloudTokensAndLogs.tokens.length > 0) {
+      // Update memory with tokens from Firestore (strictly keeping official allowed tokens)
+      cloudTokensAndLogs.tokens.forEach((t) => {
+        if (t && t.token) {
+          const uKey = t.token.toUpperCase();
+          const tUserLower = (t.username || "").trim().toLowerCase();
+          const tCandId = t.candidateId;
+          const isAllowed = ALLOWED_OFFICIAL_TOKEN_KEYS.has(uKey);
+          const isRevoked = !isAllowed || revokedTokensSet.has(uKey) ||
+            (tUserLower && revokedUsernames.has(tUserLower)) ||
+            (tCandId && revokedCandIds.has(tCandId));
+
+          if (!isRevoked && isAllowed) {
+            cloudTokenKeys.add(uKey);
+            REGISTERED_DISCORD_USERS.set(uKey, t);
+          } else {
+            // Actively purge invalid/revoked/duplicate doc from Firestore employee_tokens
+            deleteTokenFirestore(t.token, t.username, t.candidateId);
+          }
+        }
+      });
+    }
+
+    // Ensure all official seeds are present
+    ensureTokensForCandidates();
+
+    // Bi-directional token sync: ensure all official active tokens are persisted to Cloud Firestore
+    for (const [tKey, localUser] of REGISTERED_DISCORD_USERS.entries()) {
+      if (tKey !== MASTER_SECRET_TOKEN.toUpperCase()) {
+        const uUserLower = (localUser.username || "").trim().toLowerCase();
+        const uCandId = localUser.candidateId;
+        const isAllowed = ALLOWED_OFFICIAL_TOKEN_KEYS.has(tKey.toUpperCase());
+        const isRevoked = !isAllowed || revokedTokensSet.has(tKey) ||
+          (localUser.token && revokedTokensSet.has(localUser.token.toUpperCase())) ||
+          (uUserLower && revokedUsernames.has(uUserLower)) ||
+          (uCandId && revokedCandIds.has(uCandId));
+
+        if (!isRevoked && isAllowed) {
+          if (!cloudTokenKeys.has(tKey)) {
+            await saveTokenFirestore(localUser);
+          }
+        } else {
+          REGISTERED_DISCORD_USERS.delete(tKey);
+          deleteTokenFirestore(localUser.token || tKey, localUser.username, localUser.candidateId);
+        }
+      }
+    }
+
+    // Remove any lingering revoked or unofficial tokens from memory
+    for (const rKey of revokedTokensSet) {
+      REGISTERED_DISCORD_USERS.delete(rKey);
+    }
+    for (const [uKey, uVal] of Array.from(REGISTERED_DISCORD_USERS.entries())) {
+      if (
+        !ALLOWED_OFFICIAL_TOKEN_KEYS.has(uKey.toUpperCase()) ||
+        (uVal.username && revokedUsernames.has(uVal.username.trim().toLowerCase())) ||
+        (uVal.candidateId && revokedCandIds.has(uVal.candidateId))
+      ) {
+        REGISTERED_DISCORD_USERS.delete(uKey);
+        deleteTokenFirestore(uVal.token || uKey, uVal.username, uVal.candidateId);
+      }
+    }
+
+    // Always guarantee Master Secret Token session
+    REGISTERED_DISCORD_USERS.set(MASTER_SECRET_TOKEN.toUpperCase(), MASTER_SESSION);
+    saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+
+    if (cloudTokensAndLogs.logs && cloudTokensAndLogs.logs.length > 0) {
+      const logsMap = new Map<string, AccessLog>();
+      ACCESS_LOGS.forEach((l) => { if (l && l.id) logsMap.set(l.id, l); });
+      cloudTokensAndLogs.logs.forEach((l) => {
+        if (l && l.id) logsMap.set(l.id, l);
+      });
+      ACCESS_LOGS = Array.from(logsMap.values());
+      ACCESS_LOGS.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      saveAccessLogs(ACCESS_LOGS);
+    }
+
+    // Bi-directional sync: ensure local access logs not yet in Firestore are pushed
+    if (cloudTokensAndLogs.logs) {
+      const cloudLogIds = new Set(cloudTokensAndLogs.logs.map((l) => l.id));
+      ACCESS_LOGS.forEach((localLog) => {
+        if (localLog && localLog.id && !cloudLogIds.has(localLog.id)) {
+          saveAccessLogFirestore(localLog);
+        }
+      });
+    }
+
+    // 4. Sync active sessions
+    const cloudSessions = await syncActiveSessionsFirestore();
+    if (cloudSessions && cloudSessions.length > 0) {
+      cloudSessions.forEach((s) => {
+        if (s && s.token && !ACTIVE_SESSIONS.has(s.token)) {
+          ACTIVE_SESSIONS.set(s.token, {
+            createdAt: s.createdAt || Date.now(),
+            lastSeen: s.lastSeen || Date.now(),
+            employeeToken: s.employeeToken,
+            employeeUsername: s.employeeUsername,
+            employeeRoleName: s.employeeRoleName,
+            reviewerName: s.reviewerName,
+          });
+        }
+      });
+    }
+
+    // 5. Ensure official hierarchy members
     HIERARCHY_MEMBERS = buildAutoHierarchyMembers();
     saveAllHierarchyMembersFirestore(HIERARCHY_MEMBERS);
-  }
 
-  if (process.env.NODE_ENV !== "production") {
-    // Development mode with Vite middleware
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    // Production mode
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
+    lastGlobalSyncTimestamp = Date.now();
+  } catch (err) {
+    console.error("Error in syncAllDataWithFirestore:", err);
+  } finally {
+    isGlobalSyncInProgress = false;
   }
+}
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
-  });
+async function startServer() {
+  try {
+    ensureTokensForCandidates();
+
+    if (!HIERARCHY_MEMBERS || HIERARCHY_MEMBERS.length === 0) {
+      HIERARCHY_MEMBERS = buildAutoHierarchyMembers();
+    }
+
+    if (process.env.NODE_ENV !== "production") {
+      // Development mode with Vite middleware
+      const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+      });
+      app.use(vite.middlewares);
+    } else {
+      // Production mode
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
+      app.get("*", (req, res) => {
+        res.sendFile(path.join(distPath, "index.html"));
+      });
+    }
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running on http://0.0.0.0:${PORT}`);
+
+      // Asynchronously synchronize with Cloud Firestore in the background
+      syncAllDataWithFirestore(true).catch((e) => {
+        console.error("Initial Firestore sync error:", e);
+      });
+
+      // Setup periodic background sync every 30 seconds
+      setInterval(() => {
+        syncAllDataWithFirestore().catch((e) => console.error("Background sync error:", e));
+      }, 30000);
+    });
+  } catch (err) {
+    console.error("Failed to start server:", err);
+  }
 }
 
 startServer();

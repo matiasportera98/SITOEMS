@@ -1,14 +1,26 @@
 import React, { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Vote, ChevronUp, ChevronDown, Check, User, AlertCircle, FileText, Send, Sparkles, Search, Plus, Trash2, X, Move } from "lucide-react";
+import { Vote, ChevronUp, ChevronDown, Check, User, AlertCircle, FileText, Send, Sparkles, Search, Plus, Trash2, X, Move, Key } from "lucide-react";
 import { RoleId, Candidate, SiteSettings, ROLE_IDS_SORTED_ASC, ROLE_IDS_SORTED_DESC, ROLE_CONFIGS } from "../types.js";
 import RoleBadge from "./RoleBadge.js";
 
+const MASTER_OWNERS = ["Giovanni Manzo", "Simone Rizzus", "Antony Romano"];
+
 interface VoterPortalProps {
   configVersion: number;
+  discordSession?: any;
 }
 
-export default function VoterPortal({ configVersion }: VoterPortalProps) {
+export default function VoterPortal({ configVersion, discordSession }: VoterPortalProps) {
+  // Check if session is using the Master Key or is a Master account
+  const isMasterSession = Boolean(
+    discordSession?.isMaster ||
+    (typeof window !== "undefined" && (
+      localStorage.getItem("discordToken")?.toUpperCase() === "OSPEDALEPILLOLA2025!MASTERKEYPRIVATA" ||
+      localStorage.getItem("adminToken")?.toUpperCase() === "OSPEDALEPILLOLA2025!MASTERKEYPRIVATA"
+    ))
+  );
+
   // Public configurations fetched from API
   const [settings, setSettings] = useState<SiteSettings | null>(null);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
@@ -17,6 +29,13 @@ export default function VoterPortal({ configVersion }: VoterPortalProps) {
 
   // Voter inputs
   const [voterFullName, setVoterFullName] = useState<string>("");
+
+  // Auto-fill voterFullName if logged in with a standard user session
+  useEffect(() => {
+    if (discordSession && !isMasterSession && discordSession.username) {
+      setVoterFullName(discordSession.username);
+    }
+  }, [discordSession, isMasterSession]);
   const [selections, setSelections] = useState<Record<RoleId, string[]>>(() => {
     // Initialize all roles with empty lists
     const initial: any = {};
@@ -337,13 +356,31 @@ export default function VoterPortal({ configVersion }: VoterPortalProps) {
               </div>
             </div>
 
+            {isMasterSession && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3.5 text-amber-200 text-xs flex items-center gap-2.5 mb-6">
+                <Key size={18} className="text-amber-400 shrink-0" />
+                <span>
+                  Voto registrato con la <strong>Chiave Master</strong> per <strong>{lastSubmittedVote?.voterFullName}</strong>. Puoi procedere subito a votare per un altro Proprietario.
+                </span>
+              </div>
+            )}
+
             <div className="flex justify-center gap-4">
               <button
                 type="button"
-                onClick={() => setSubmitSuccess(false)}
-                className="px-5 py-2.5 bg-white/5 hover:bg-white/10 border border-white/10 text-white font-semibold rounded-lg text-sm transition-all cursor-pointer"
+                onClick={() => {
+                  setSubmitSuccess(false);
+                  setVoterFullName("");
+                  const initial: any = {};
+                  Object.values(RoleId).forEach((roleId) => {
+                    initial[roleId] = [];
+                  });
+                  setSelections(initial);
+                }}
+                className="px-5 py-2.5 bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-400 hover:to-amber-500 text-slate-950 font-black rounded-lg text-sm transition-all cursor-pointer shadow-lg shadow-amber-950/50 flex items-center gap-2"
               >
-                Invia un'altra scheda
+                <Plus size={16} />
+                {isMasterSession ? "Invia voto per un altro Proprietario" : "Invia un'altra scheda"}
               </button>
             </div>
           </motion.div>
@@ -394,6 +431,45 @@ export default function VoterPortal({ configVersion }: VoterPortalProps) {
 
               {/* Voter Name field */}
               <div className="pt-6 border-t border-white/5 max-w-xl">
+                {isMasterSession && (
+                  <div className="mb-5 p-4 sm:p-5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-200 shadow-lg shadow-amber-950/20">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Key className="text-amber-400 shrink-0" size={18} />
+                      <span className="font-extrabold text-xs sm:text-sm text-amber-300 uppercase tracking-wide">
+                        🔑 Sessione Chiave Master — Voto Proprietari
+                      </span>
+                    </div>
+                    <p className="text-xs text-amber-200/90 leading-relaxed mb-3">
+                      In qualità di titolare della Chiave Master puoi inviare più schede elettorali. Seleziona per quale Proprietario stai votando:
+                    </p>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      {MASTER_OWNERS.map((ownerName) => {
+                        const isSelected = voterFullName === ownerName;
+                        return (
+                          <button
+                            key={ownerName}
+                            type="button"
+                            disabled={!settings?.votingActive}
+                            onClick={() => setVoterFullName(ownerName)}
+                            className={`flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                              isSelected
+                                ? "bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 border-amber-300 shadow-md shadow-amber-950/50 scale-[1.02]"
+                                : "bg-slate-900/90 text-amber-100 border-amber-500/25 hover:border-amber-400/60 hover:bg-amber-500/10"
+                            } disabled:opacity-50`}
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <User size={15} className={isSelected ? "text-slate-950" : "text-amber-400"} />
+                              <span className="truncate">{ownerName}</span>
+                            </div>
+                            {isSelected && <Check size={15} className="shrink-0 text-slate-950" strokeWidth={3} />}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <label htmlFor="voter-fullname" className="block text-sm font-semibold text-slate-300 mb-2">
                   Nome e cognome dell'elettore <span className="text-red-400">*</span>
                 </label>
@@ -408,8 +484,8 @@ export default function VoterPortal({ configVersion }: VoterPortalProps) {
                     disabled={!settings?.votingActive}
                     value={voterFullName}
                     onChange={(e) => setVoterFullName(e.target.value)}
-                    placeholder="Esempio: Mario Rossi"
-                    className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all font-medium text-sm disabled:opacity-50"
+                    placeholder={isMasterSession ? "Seleziona un Proprietario sopra o inserisci un nome..." : "Esempio: Mario Rossi"}
+                    className="w-full pl-10 pr-4 py-3 bg-white/5 border border-white/10 rounded-lg text-white placeholder-slate-500 focus:outline-hidden focus:ring-2 focus:ring-amber-500 focus:border-transparent transition-all font-medium text-sm disabled:opacity-50"
                   />
                 </div>
                 <p className="text-xs text-slate-500 mt-1.5 leading-normal">

@@ -114,7 +114,7 @@ export default function NotificationMenu({ discordToken, adminToken, onNavigate 
           {/* Overlay to close on outside click */}
           <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs" onClick={() => setIsOpen(false)} />
 
-          <div className="absolute right-0 top-full mt-2.5 w-80 sm:w-96 max-w-[calc(100vw-1.5rem)] bg-[#121216] border border-amber-500/40 rounded-2xl shadow-2xl z-[60] overflow-hidden backdrop-blur-2xl animate-fadeIn">
+          <div className="fixed sm:absolute inset-x-3 sm:inset-auto sm:right-0 top-14 sm:top-full mt-0 sm:mt-2.5 max-h-[calc(100vh-4.5rem)] sm:max-h-[calc(100vh-6rem)] sm:w-96 max-w-sm sm:max-w-md mx-auto sm:mx-0 bg-[#121216] border border-amber-500/40 rounded-2xl shadow-2xl z-[60] flex flex-col overflow-hidden backdrop-blur-2xl animate-fadeIn phone-landscape-center">
             {/* Header */}
             <div className="p-3.5 bg-[#0a0a0d] border-b border-white/10 flex items-center justify-between">
               <div className="flex items-center gap-2">
@@ -151,7 +151,7 @@ export default function NotificationMenu({ discordToken, adminToken, onNavigate 
             )}
 
             {/* Notification Items List */}
-            <div className="max-h-80 overflow-y-auto dark-scrollbar p-2 space-y-2">
+            <div className="flex-1 min-h-0 overflow-y-auto dark-scrollbar p-2 space-y-2 max-h-[50vh] sm:max-h-80">
               {activeNotifications.length === 0 ? (
                 <div className="p-6 text-center space-y-2">
                   <div className="w-10 h-10 mx-auto rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between justify-center text-emerald-400">

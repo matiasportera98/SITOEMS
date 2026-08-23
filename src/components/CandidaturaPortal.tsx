@@ -15,6 +15,9 @@ import {
   Sparkles,
   Award,
   X,
+  Lock,
+  Info,
+  ArrowRight,
 } from "lucide-react";
 import {
   Candidatura,
@@ -22,6 +25,7 @@ import {
   CANDIDATURA_DESIRED_ROLES,
   DiscordUserSession,
   getRoleBadgeStyle,
+  getNextPromotionRole,
 } from "../types.js";
 
 interface CandidaturaPortalProps {
@@ -31,7 +35,7 @@ interface CandidaturaPortalProps {
 export default function CandidaturaPortal({ discordSession }: CandidaturaPortalProps) {
   const [fullName, setFullName] = useState<string>(discordSession?.username || "");
   const [currentRole, setCurrentRole] = useState<string>("Primario");
-  const [desiredRole, setDesiredRole] = useState<string>("V. Primario di Reparto");
+  const [desiredRole, setDesiredRole] = useState<string>(() => getNextPromotionRole("Primario"));
   const [timeSlot, setTimeSlot] = useState<string>("");
   const [offerText, setOfferText] = useState<string>("");
 
@@ -136,6 +140,15 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
   useEffect(() => {
     if (discordSession?.username && !fullName) {
       setFullName(discordSession.username);
+    }
+    if (discordSession?.roleName) {
+      const match = CANDIDATURA_CURRENT_ROLES.find(
+        (r) => r.name.toLowerCase() === discordSession.roleName.toLowerCase()
+      );
+      if (match) {
+        setCurrentRole(match.name);
+        setDesiredRole(getNextPromotionRole(match.name));
+      }
     }
     fetchMyStatus(false);
 
@@ -568,67 +581,90 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
           </div>
 
           {/* Field 2 & 3: Ruolo Attuale e Ruolo Desiderato */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Field 2: Ruolo Attuale */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                  <Shield size={14} className="text-amber-400" />
-                  2. Ruolo Attuale <span className="text-rose-400">*</span>
-                </label>
-                {/* Live Role Badge Preview */}
-                <span
-                  className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${currentRoleStyle.className}`}
-                  style={currentRoleStyle.style}
+          <div className="space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Field 2: Ruolo Attuale */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <Shield size={14} className="text-amber-400" />
+                    2. Ruolo Attuale <span className="text-rose-400">*</span>
+                  </label>
+                  {/* Live Role Badge Preview */}
+                  <span
+                    className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${currentRoleStyle.className}`}
+                    style={currentRoleStyle.style}
+                  >
+                    {currentRole}
+                  </span>
+                </div>
+                <select
+                  value={currentRole}
+                  onChange={(e) => {
+                    const newRole = e.target.value;
+                    setCurrentRole(newRole);
+                    setDesiredRole(getNextPromotionRole(newRole));
+                  }}
+                  className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white outline-none cursor-pointer transition-all font-medium"
                 >
-                  {currentRole}
-                </span>
+                  {CANDIDATURA_CURRENT_ROLES.map((r) => (
+                    <option key={r.name} value={r.name} className="bg-slate-900 text-white font-medium">
+                      {r.name}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-2xs text-slate-500">
+                  Seleziona il grado attualmente ricoperto nel corpo EMS.
+                </p>
               </div>
-              <select
-                value={currentRole}
-                onChange={(e) => setCurrentRole(e.target.value)}
-                className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white outline-none cursor-pointer transition-all font-medium"
-              >
-                {CANDIDATURA_CURRENT_ROLES.map((r) => (
-                  <option key={r.name} value={r.name} className="bg-slate-900 text-white font-medium">
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-              <p className="text-2xs text-slate-500">
-                Selezionabile da Primario fino a V. Responsabile del Presidio.
-              </p>
+
+              {/* Field 3: Ruolo Desiderato (Locked to immediate next superior grade) */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                    <Award size={14} className="text-red-400" />
+                    3. Ruolo Desiderato (Grado Superiore) <span className="text-rose-400">*</span>
+                  </label>
+                  {/* Live Role Badge Preview */}
+                  <span
+                    className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${desiredRoleStyle.className}`}
+                    style={desiredRoleStyle.style}
+                  >
+                    {desiredRole}
+                  </span>
+                </div>
+                <div className="relative">
+                  <div className="w-full bg-[#0a0a0f]/80 border border-slate-700/60 rounded-2xl px-4 py-3 text-sm text-white flex items-center justify-between font-semibold shadow-inner select-none">
+                    <div className="flex items-center gap-2.5">
+                      <ArrowRight size={14} className="text-amber-400 shrink-0" />
+                      <span>{desiredRole}</span>
+                    </div>
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400/90 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
+                      <Lock size={12} />
+                      Assegnato Automaticamente
+                    </span>
+                  </div>
+                </div>
+                <p className="text-2xs text-slate-400">
+                  Grado immediatamente superiore calcolato in automatico in base alla gerarchia.
+                </p>
+              </div>
             </div>
 
-            {/* Field 3: Ruolo Desiderato */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                  <Award size={14} className="text-red-400" />
-                  3. Ruolo Desiderato <span className="text-rose-400">*</span>
-                </label>
-                {/* Live Role Badge Preview */}
-                <span
-                  className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${desiredRoleStyle.className}`}
-                  style={desiredRoleStyle.style}
-                >
-                  {desiredRole}
-                </span>
+            {/* Explanatory Notice: Double promotion is exclusively managed by CDA */}
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/60 border border-indigo-500/30 flex items-start gap-3.5 text-xs text-indigo-200 shadow-md">
+              <div className="p-2 bg-indigo-500/15 rounded-xl text-indigo-400 shrink-0 border border-indigo-500/30 mt-0.5">
+                <Info size={18} />
               </div>
-              <select
-                value={desiredRole}
-                onChange={(e) => setDesiredRole(e.target.value)}
-                className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white outline-none cursor-pointer transition-all font-medium"
-              >
-                {CANDIDATURA_DESIRED_ROLES.map((r) => (
-                  <option key={r.name} value={r.name} className="bg-slate-900 text-white font-medium">
-                    {r.name}
-                  </option>
-                ))}
-              </select>
-              <p className="text-2xs text-slate-500">
-                Selezionabile dal grado di V. Primario di Reparto fino a Responsabile del Presidio.
-              </p>
+              <div className="space-y-1">
+                <h4 className="font-bold text-indigo-100 flex items-center gap-1.5 text-xs uppercase tracking-wide">
+                  <span>Regola di Avanzamento Ordinario & Doppia Promozione</span>
+                </h4>
+                <p className="text-slate-300 text-xs leading-relaxed">
+                  Il modulo assegna in automatico lo scatto al <strong>grado immediatamente superiore</strong>. 
+                  Qualora si desideri richiedere una <strong>doppia promozione di ruolo</strong> (salto straordinario di grado), tale decisione non può essere richiesta tramite candidatura ordinaria ed è di <strong>competenza e responsabilità esclusiva del Consiglio di Amministrazione (CDA)</strong>.
+                </p>
+              </div>
             </div>
           </div>
 

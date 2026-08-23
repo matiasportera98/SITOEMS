@@ -36,6 +36,11 @@ import {
   Search,
   ShieldAlert,
   RotateCcw,
+  ThumbsUp,
+  ThumbsDown,
+  CheckCircle2,
+  XCircle,
+  FileSpreadsheet,
 } from "lucide-react";
 import {
   RoleId,
@@ -52,8 +57,11 @@ import {
   CandidaturaStatus,
   CdaProposal,
   CdaProposalType,
+  CdaUserVote,
   getRoleBadgeStyle,
   getUserEffectiveGrade,
+  isCdaRoleName,
+  getCdaRank,
 } from "../types.js";
 import RoleBadge from "./RoleBadge.js";
 import EmsHierarchy from "./EmsHierarchy.js";
@@ -62,7 +70,14 @@ interface AdminPortalProps {
   onConfigChanged: () => void;
 }
 
-type TabType = "candidates" | "votes" | "analytics" | "tokens" | "logs" | "hierarchy" | "candidature" | "cda_proposals" | "settings";
+interface RevokedTokenEntry {
+  token: string;
+  username?: string;
+  candidateId?: string;
+  revokedAt: string;
+}
+
+type TabType = "candidates" | "votes" | "analytics" | "tokens" | "revoked_tokens" | "logs" | "hierarchy" | "candidature" | "cda_proposals" | "settings";
 
 export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   const [token, setToken] = useState<string | null>(() => localStorage.getItem("adminToken"));
@@ -113,6 +128,16 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   // Confirm Token Revocation Modal State
   const [tokenToConfirmRevoke, setTokenToConfirmRevoke] = useState<DiscordUserSession | null>(null);
   const [isRevokingToken, setIsRevokingToken] = useState<boolean>(false);
+  const [revokeModalError, setRevokeModalError] = useState<string | null>(null);
+
+  // Revoked Tokens State
+  const [revokedTokens, setRevokedTokens] = useState<RevokedTokenEntry[]>([]);
+  const [isLoadingRevokedTokens, setIsLoadingRevokedTokens] = useState<boolean>(false);
+  const [revokedTokenSearch, setRevokedTokenSearch] = useState<string>("");
+  const [unrevokingToken, setUnrevokingToken] = useState<string | null>(null);
+  const [permanentDeletingToken, setPermanentDeletingToken] = useState<string | null>(null);
+  const [revocationSuccessMsg, setRevocationSuccessMsg] = useState<string | null>(null);
+  const [revocationErrorMsg, setRevocationErrorMsg] = useState<string | null>(null);
 
   // Session details & permissions
   const [sessionInfo, setSessionInfo] = useState<{
@@ -160,22 +185,42 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
     return headers;
   };
 
-  const isMasterSession = Boolean(sessionInfo?.isMaster);
   const cleanUserRole = (sessionInfo?.roleName || "").toLowerCase();
+  const isMasterSession = Boolean(
+    sessionInfo?.isMaster ||
+    cleanUserRole.includes("proprietario") ||
+    (sessionInfo?.grade !== undefined && sessionInfo.grade >= 99)
+  );
   const isProprietarioUser = Boolean(
     isMasterSession ||
-    (cleanUserRole.includes("proprietario") && !cleanUserRole.includes("vice") && !cleanUserRole.includes("v."))
+    cleanUserRole.includes("proprietario") ||
+    (sessionInfo?.grade !== undefined && sessionInfo.grade >= 99)
   );
   const isHighOwner = Boolean(
     isMasterSession ||
-    (sessionInfo?.grade !== undefined && sessionInfo.grade >= 99) ||
-    cleanUserRole.includes("proprietario")
+    cleanUserRole.includes("proprietario") ||
+    (sessionInfo?.grade !== undefined && sessionInfo.grade >= 99)
   );
+
+  const isDirettoreGeneraleUser = Boolean(
+    isProprietarioUser ||
+    isMasterSession ||
+    cleanUserRole.includes("direttore generale") ||
+    (sessionInfo?.grade !== undefined && sessionInfo.grade >= 20)
+  );
+
+  const isMasterKey = (t: { isMaster?: boolean; token: string }) =>
+    Boolean(t.isMaster || t.token.toUpperCase() === "EMS-2410PROP");
 
   const visibleEmployeeTokens = (isProprietarioUser
     ? employeeTokens
-    : employeeTokens.filter((emp) => !emp.isMaster && !emp.isTestToken)
+    : employeeTokens.filter((emp) => !isMasterKey(emp) && !emp.isTestToken)
   ).sort((a, b) => {
+    const isA = isMasterKey(a);
+    const isB = isMasterKey(b);
+    if (isA && !isB) return -1;
+    if (!isA && isB) return 1;
+
     const gradeA = getUserEffectiveGrade(a);
     const gradeB = getUserEffectiveGrade(b);
     if (gradeB !== gradeA) {
@@ -331,6 +376,10 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   const [isDeletingProposal, setIsDeletingProposal] = useState<boolean>(false);
   const [deleteProposalError, setDeleteProposalError] = useState<string | null>(null);
 
+  // Key Master & Proprietario Voters View Modal State
+  const [viewingVotersProposal, setViewingVotersProposal] = useState<CdaProposal | null>(null);
+  const [viewingVotersCandidatura, setViewingVotersCandidatura] = useState<Candidatura | null>(null);
+
   const handleOpenResetModal = (cand: Candidatura) => {
     setResettingModalCandidatura(cand);
     setResetModalError(null);
@@ -373,38 +422,46 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   };
 
   const fetchCandidature = async (authToken?: string, isSilent = false) => {
-    const useToken = authToken || token;
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
     if (!useToken) return;
     if (!isSilent) setIsLoadingCandidature(true);
     try {
       const response = await fetch("/api/admin/candidature", {
         headers: getAdminHeaders(useToken),
       });
-      const data = await response.json();
-      if (response.ok && data.candidature) {
-        setCandidatureList(data.candidature);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && Array.isArray(data.candidature)) {
+          setCandidatureList(data.candidature);
+        }
       }
     } catch (err) {
-      console.error("Errore recupero candidature:", err);
+      if (!isSilent) {
+        console.warn("Avviso: recupero candidature non riuscito momentaneamente.");
+      }
     } finally {
       if (!isSilent) setIsLoadingCandidature(false);
     }
   };
 
   const fetchCdaProposals = async (authToken?: string, isSilent = false) => {
-    const useToken = authToken || token;
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
     if (!useToken) return;
     if (!isSilent) setIsLoadingCdaProposals(true);
     try {
       const response = await fetch("/api/admin/cda-proposals", {
         headers: getAdminHeaders(useToken),
       });
-      const data = await response.json();
-      if (response.ok && Array.isArray(data.proposals)) {
-        setCdaProposalsList(data.proposals);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && Array.isArray(data.proposals)) {
+          setCdaProposalsList(data.proposals);
+        }
       }
     } catch (err) {
-      console.error("Errore recupero proposte CDA:", err);
+      if (!isSilent) {
+        console.warn("Avviso: recupero proposte CDA non riuscito momentaneamente.");
+      }
     } finally {
       if (!isSilent) setIsLoadingCdaProposals(false);
     }
@@ -720,19 +777,23 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
 
   // Fetch access logs
   const fetchAccessLogs = async (authToken?: string, isSilent = false) => {
-    const useToken = authToken || token;
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
     if (!useToken) return;
     if (!isSilent) setIsLoadingLogs(true);
     try {
       const response = await fetch("/api/admin/access-logs", {
         headers: getAdminHeaders(useToken),
       });
-      const data = await response.json();
-      if (response.ok && data.logs) {
-        setAccessLogs(data.logs);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && Array.isArray(data.logs)) {
+          setAccessLogs(data.logs);
+        }
       }
     } catch (err) {
-      console.error("Errore recupero log degli accessi:", err);
+      if (!isSilent) {
+        console.warn("Avviso: recupero log degli accessi non riuscito momentaneamente.");
+      }
     } finally {
       if (!isSilent) setIsLoadingLogs(false);
     }
@@ -762,47 +823,141 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
 
   // Fetch session details & permissions
   const fetchSessionInfo = async (authToken?: string) => {
-    const useToken = authToken || token;
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
     if (!useToken) return;
     try {
       const response = await fetch("/api/admin/session-info", {
         headers: getAdminHeaders(useToken),
       });
-      const data = await response.json();
-      if (response.ok && data.success) {
-        setSessionInfo({
-          roleName: data.roleName,
-          username: data.username,
-          reviewerName: data.reviewerName,
-          grade: data.grade,
-          canManageTokens: data.canManageTokens,
-          isMaster: data.isMaster,
-        });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.success) {
+          setSessionInfo({
+            roleName: data.roleName,
+            username: data.username,
+            reviewerName: data.reviewerName,
+            grade: data.grade,
+            canManageTokens: data.canManageTokens,
+            isMaster: data.isMaster,
+          });
+        }
       }
     } catch (err) {
-      console.error("Errore recupero session info:", err);
+      // Session info silent fallback
     }
   };
 
   // Fetch employee tokens
   const fetchEmployeeTokens = async (authToken?: string, isSilent = false) => {
-    const useToken = authToken || token;
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
     if (!useToken) return;
     if (!isSilent) setIsLoadingTokens(true);
     try {
       const response = await fetch("/api/admin/employee-tokens", {
         headers: getAdminHeaders(useToken),
       });
-      const data = await response.json();
-      if (response.ok && data.tokens) {
-        setEmployeeTokens(data.tokens);
+      if (response.ok) {
+        const data = await response.json();
+        if (data && Array.isArray(data.tokens)) {
+          setEmployeeTokens(data.tokens);
+        }
       } else if (response.status === 403) {
         setEmployeeTokens([]);
       }
     } catch (err) {
-      console.error("Errore recupero token dipendenti:", err);
+      // Retry once silently on network error
+      try {
+        const retryRes = await fetch("/api/admin/employee-tokens", {
+          headers: getAdminHeaders(useToken),
+        });
+        if (retryRes.ok) {
+          const retryData = await retryRes.json();
+          if (retryData && Array.isArray(retryData.tokens)) {
+            setEmployeeTokens(retryData.tokens);
+          }
+        }
+      } catch (_e) {
+        console.warn("Avviso: recupero token dipendenti non riuscito momentaneamente.");
+      }
     } finally {
       if (!isSilent) setIsLoadingTokens(false);
+    }
+  };
+
+  // Fetch revoked tokens
+  const fetchRevokedTokens = async (authToken?: string, isSilent = false) => {
+    const useToken = authToken || token || localStorage.getItem("adminToken") || "";
+    if (!useToken) return;
+    if (!isSilent) setIsLoadingRevokedTokens(true);
+    try {
+      const response = await fetch("/api/admin/revoked-tokens", {
+        headers: getAdminHeaders(useToken),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        if (data && data.success && Array.isArray(data.revokedTokens)) {
+          setRevokedTokens(data.revokedTokens);
+        }
+      }
+    } catch (err) {
+      console.warn("Avviso: recupero token revocati non riuscito momentaneamente.");
+    } finally {
+      if (!isSilent) setIsLoadingRevokedTokens(false);
+    }
+  };
+
+  // Unrevoke (restore) a token
+  const handleUnrevokeToken = async (tokenToUnrevoke: string) => {
+    setUnrevokingToken(tokenToUnrevoke);
+    setRevocationSuccessMsg(null);
+    setRevocationErrorMsg(null);
+    try {
+      const response = await fetch(`/api/admin/revoked-tokens/${encodeURIComponent(tokenToUnrevoke)}`, {
+        method: "DELETE",
+        headers: getAdminHeaders(),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setRevocationSuccessMsg(data.message || `Revoca per il token ${tokenToUnrevoke} annullata con successo.`);
+        await fetchRevokedTokens();
+        await fetchEmployeeTokens();
+      } else {
+        setRevocationErrorMsg(data.error || "Errore durante l'annullamento della revoca.");
+      }
+    } catch (err) {
+      setRevocationErrorMsg("Errore di connessione durante l'annullamento della revoca.");
+    } finally {
+      setUnrevokingToken(null);
+    }
+  };
+
+  // Permanently delete a token (removes completely from Firestore and local, prevents sync restoration)
+  const handlePermanentDeleteToken = async (tokenToPurge: string) => {
+    if (!window.confirm(`Sei sicuro di voler eliminare DEFINITIVAMENTE il token ${tokenToPurge}?\n\nQuesta operazione cancellerà il token da tutti gli archivi e ne impedirà qualsiasi ripristino o ricreazione automatica.`)) {
+      return;
+    }
+    setPermanentDeletingToken(tokenToPurge);
+    setRevocationSuccessMsg(null);
+    setRevocationErrorMsg(null);
+    try {
+      const activeToken = token || localStorage.getItem("adminToken") || "";
+      const response = await fetch(`/api/admin/revoked-tokens/${encodeURIComponent(tokenToPurge)}/permanent`, {
+        method: "DELETE",
+        headers: getAdminHeaders(activeToken),
+      });
+      const data = await response.json();
+      if (response.ok && data.success) {
+        setRevocationSuccessMsg(data.message || `Token ${tokenToPurge} eliminato definitivamente.`);
+        await fetchRevokedTokens();
+        await fetchEmployeeTokens();
+        await fetchAccessLogs();
+      } else {
+        setRevocationErrorMsg(data.error || "Errore durante l'eliminazione definitiva del token.");
+      }
+    } catch (err) {
+      setRevocationErrorMsg("Errore di connessione durante l'eliminazione definitiva del token.");
+    } finally {
+      setPermanentDeletingToken(null);
     }
   };
 
@@ -841,12 +996,15 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
         setDashboardError(null);
       }
 
-      // Also fetch session info, employee tokens, access logs, and candidature
-      fetchSessionInfo(authToken);
-      fetchEmployeeTokens(authToken, isSilent);
-      fetchAccessLogs(authToken, isSilent);
-      fetchCandidature(authToken, isSilent);
-      fetchCdaProposals(authToken, isSilent);
+      // Also fetch session info, employee tokens, revoked tokens, access logs, and candidature safely
+      Promise.allSettled([
+        fetchSessionInfo(authToken),
+        fetchEmployeeTokens(authToken, isSilent),
+        fetchRevokedTokens(authToken, isSilent),
+        fetchAccessLogs(authToken, isSilent),
+        fetchCandidature(authToken, isSilent),
+        fetchCdaProposals(authToken, isSilent),
+      ]).catch(() => {});
     } catch (err: any) {
       if (!isSilent) setDashboardError(err.message || "Errore di caricamento.");
     } finally {
@@ -860,6 +1018,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
     setTokenActionError(null);
     setTokenSuccessMessage(null);
 
+    const activeToken = token || localStorage.getItem("adminToken") || "";
     if (sessionInfo && !sessionInfo.canManageTokens) {
       setTokenActionError("Accesso riservato: Solo il personale con grado da V. Direttore in su può generare token.");
       return;
@@ -879,7 +1038,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          ...getAdminHeaders(activeToken),
         },
         body: JSON.stringify({
           fullName: newEmpFullName.trim(),
@@ -899,7 +1058,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
       setNewEmpFullName("");
       setNewEmpCustomToken("");
       setNewEmpCdaRole("DEFAULT");
-      fetchEmployeeTokens(token!);
+      fetchEmployeeTokens(activeToken);
     } catch (err: any) {
       setTokenActionError(err.message || "Errore durante la generazione.");
     } finally {
@@ -913,6 +1072,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
     setTestTokenError(null);
     setTestTokenSuccessMessage(null);
 
+    const activeToken = token || localStorage.getItem("adminToken") || "";
     if (!isProprietarioUser) {
       setTestTokenError("Accesso riservato: Solo la Proprietà può generare Token TEST.");
       return;
@@ -931,7 +1091,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          ...getAdminHeaders(activeToken),
         },
         body: JSON.stringify({
           fullName: testEmpFullName.trim(),
@@ -952,7 +1112,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
       setTestEmpFullName("");
       setTestEmpCustomToken("");
       setTestEmpCdaRole("DEFAULT");
-      fetchEmployeeTokens(token!);
+      fetchEmployeeTokens(activeToken);
     } catch (err: any) {
       setTestTokenError(err.message || "Errore durante la generazione del token TEST.");
     } finally {
@@ -1025,21 +1185,47 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   };
 
   // Revoke Token Handler
-  const handleRevokeToken = async (tokenToRevoke: string) => {
+  const handleRevokeToken = async (
+    tokenToRevoke: string,
+    meta?: { username?: string; candidateId?: string; roleName?: string }
+  ): Promise<boolean> => {
     setTokenActionError(null);
-    if (sessionInfo && !sessionInfo.canManageTokens) {
-      setTokenActionError("Accesso riservato: Solo il personale con grado da V. Direttore in su può revocare token.");
-      return;
-    }
+    setRevokeModalError(null);
     const targetTokenObj = employeeTokens.find((emp) => emp.token.toUpperCase() === tokenToRevoke.toUpperCase());
-    if (targetTokenObj?.isMaster) {
-      setTokenActionError("Il Token Master è permanente e non può essere eliminato.");
-      return;
+    const isMasterKey = targetTokenObj?.isMaster || tokenToRevoke.toUpperCase() === "EMS-2410PROP" || targetTokenObj?.roleName?.toLowerCase().includes("master");
+    if (isMasterKey) {
+      const err = "Il Token Master è permanente e non può essere eliminato.";
+      setTokenActionError(err);
+      setRevokeModalError(err);
+      return false;
+    }
+    const isAuthorized = !sessionInfo || sessionInfo.canManageTokens || sessionInfo.isMaster || sessionInfo.isAdminPassword || (sessionInfo.grade && sessionInfo.grade >= 10);
+    if (!isAuthorized) {
+      const err = "Accesso riservato: Solo il personale con grado da V. Direttore in su può revocare token.";
+      setTokenActionError(err);
+      setRevokeModalError(err);
+      return false;
+    }
+    const activeToken = token || localStorage.getItem("adminToken") || "";
+    if (!activeToken) {
+      const err = "Token di autenticazione non trovato. Effettua nuovamente il login.";
+      setTokenActionError(err);
+      setRevokeModalError(err);
+      return false;
     }
     try {
       const response = await fetch(`/api/admin/employee-tokens/${encodeURIComponent(tokenToRevoke)}`, {
         method: "DELETE",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          "Content-Type": "application/json",
+          ...getAdminHeaders(activeToken),
+        },
+        body: JSON.stringify({
+          reviewer: getLocalReviewerName(),
+          username: meta?.username || targetTokenObj?.username,
+          candidateId: meta?.candidateId || targetTokenObj?.candidateId,
+          roleName: meta?.roleName || targetTokenObj?.roleName,
+        }),
       });
 
       const data = await response.json();
@@ -1048,8 +1234,16 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
       }
 
       setEmployeeTokens((prev) => prev.filter((t) => t.token.toUpperCase() !== tokenToRevoke.toUpperCase()));
+      setTokenSuccessMessage(data.message || `Token ${tokenToRevoke} eliminato definitivamente con successo.`);
+      await fetchEmployeeTokens(activeToken, true);
+      await fetchRevokedTokens(activeToken, true);
+      await fetchAccessLogs(activeToken, true);
+      return true;
     } catch (err: any) {
-      setTokenActionError(err.message || "Errore durante la revoca.");
+      const errMsg = err.message || "Errore durante la revoca del token.";
+      setTokenActionError(errMsg);
+      setRevokeModalError(errMsg);
+      return false;
     }
   };
 
@@ -1057,6 +1251,23 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
     navigator.clipboard.writeText(text);
     setCopiedToken(text);
     setTimeout(() => setCopiedToken(null), 2000);
+  };
+
+  const exportEmployeeTokensExcel = () => {
+    if (!isMasterSession) {
+      setTokenActionError("Funzionalità riservata esclusivamente all'accesso con Master Key.");
+      return;
+    }
+
+    const exportUrl = `/api/admin/export/employee-tokens?token=${encodeURIComponent(token || localStorage.getItem("adminToken") || "")}`;
+    const link = document.createElement("a");
+    link.href = exportUrl;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.setAttribute("download", "token_ragazzi_ems.csv");
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   useEffect(() => {
@@ -1548,7 +1759,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                 </button>
               </div>
               <p className="text-[10px] text-slate-500 italic">
-                Nota: Se è la prima configurazione, la password predefinita è <span className="font-semibold text-slate-400 select-all">admin123</span>.
+                Inserisci le credenziali di amministrazione autorizzate per accedere.
               </p>
             </div>
 
@@ -1589,7 +1800,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                   className="bg-amber-950/20 border border-amber-500/20 rounded-xl p-4 space-y-3 mt-2"
                 >
                   <div className="text-xs text-amber-200/90 leading-relaxed font-medium">
-                    Inserisci la password di sblocco d'emergenza per azzerare istantaneamente il blocco di sicurezza ed accedere all'area riservata (default iniziale: <span className="font-mono text-amber-300 select-all font-bold">sblocco123</span>).
+                    Inserisci la password di sblocco d'emergenza per azzerare istantaneamente il blocco di sicurezza ed accedere all'area riservata.
                   </div>
 
                   {unlockError && (
@@ -1724,6 +1935,21 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
           {sessionInfo && !sessionInfo.canManageTokens && (
             <span className="ml-1 px-1.5 py-0.5 text-[9px] bg-red-950/80 text-red-300 border border-red-500/30 rounded flex items-center gap-1 font-sans font-normal normal-case">
               <Lock size={10} /> Riservato (≥ V. Direttore)
+            </span>
+          )}
+        </button>
+        <button
+          onClick={() => setActiveTab("revoked_tokens")}
+          className={`flex items-center gap-2 px-4 py-3 font-semibold text-xs uppercase tracking-wider cursor-pointer border-b-2 transition-all ${
+            activeTab === "revoked_tokens"
+              ? "border-rose-500 text-rose-400 font-extrabold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <ShieldAlert size={16} /> Token Revocati ({revokedTokens.length})
+          {sessionInfo && !sessionInfo.canManageTokens && (
+            <span className="ml-1 px-1.5 py-0.5 text-[9px] bg-red-950/80 text-red-300 border border-red-500/30 rounded flex items-center gap-1 font-sans font-normal normal-case">
+              <Lock size={10} /> Riservato
             </span>
           )}
         </button>
@@ -3456,18 +3682,37 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
 
               {/* Table of active employee tokens */}
               <div className="bg-[#161618] rounded-xl border border-white/5 shadow-md overflow-hidden">
-                <div className="px-6 py-4 bg-white/5 border-b border-white/5 flex items-center justify-between">
+                <div className="px-6 py-4 bg-white/5 border-b border-white/5 flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2 font-bold text-sm text-slate-200">
                     <UserCheck size={18} className="text-emerald-400" />
                     <span>Registro Token Dipendenti Rilasciati ({visibleEmployeeTokens.length})</span>
                   </div>
-                  <button
-                    onClick={() => fetchEmployeeTokens()}
-                    disabled={isLoadingTokens}
-                    className="p-1.5 bg-white/5 hover:bg-white/10 text-slate-300 rounded border border-white/10 text-xs flex items-center gap-1 cursor-pointer"
-                  >
-                    <RefreshCw size={12} className={isLoadingTokens ? "animate-spin" : ""} /> Aggiorna
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {isMasterSession && (
+                      <button
+                        onClick={exportEmployeeTokensExcel}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg border border-emerald-500/40 shadow-md flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
+                        title="Scarica in un file Excel tutti i token dei ragazzi (Nome e Cognome, Grado e Token)"
+                      >
+                        <FileSpreadsheet size={15} />
+                        <span>Esporta Excel Token (Master Key)</span>
+                      </button>
+                    )}
+                    <button
+                      onClick={() => setActiveTab("revoked_tokens")}
+                      className="px-3 py-1.5 bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 font-bold rounded-lg border border-rose-500/30 text-xs flex items-center gap-1.5 cursor-pointer transition-all"
+                    >
+                      <ShieldAlert size={14} />
+                      <span>Token Revocati ({revokedTokens.length})</span>
+                    </button>
+                    <button
+                      onClick={() => fetchEmployeeTokens()}
+                      disabled={isLoadingTokens}
+                      className="p-1.5 bg-white/5 hover:bg-white/10 text-slate-300 rounded border border-white/10 text-xs flex items-center gap-1 cursor-pointer"
+                    >
+                      <RefreshCw size={12} className={isLoadingTokens ? "animate-spin" : ""} /> Aggiorna
+                    </button>
+                  </div>
                 </div>
 
                 {visibleEmployeeTokens.length === 0 ? (
@@ -3495,7 +3740,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                             <tr key={empToken.token} className={`hover:bg-white/5 transition-colors ${isExpired ? "bg-rose-950/10 opacity-75" : ""}`}>
                               <td className="py-2.5 px-3.5 font-bold text-white whitespace-nowrap">
                                 <div className="flex items-center gap-2">
-                                  <ShieldCheck size={16} className={empToken.isTestToken ? "text-purple-400 shrink-0" : "text-indigo-400 shrink-0"} />
+                                  <ShieldCheck size={16} className={isMasterKey(empToken) ? "text-rose-500 shrink-0" : empToken.isTestToken ? "text-purple-400 shrink-0" : "text-indigo-400 shrink-0"} />
                                   <div className="flex items-center gap-1.5 whitespace-nowrap">
                                     <span>{empToken.username}</span>
                                     {empToken.isTestToken && (
@@ -3598,9 +3843,9 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                 })()}
                               </td>
                               <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
-                                {empToken.isMaster ? (
-                                  <span className="h-6 px-2.5 bg-amber-500/15 text-amber-300 border border-amber-500/30 rounded-md text-[11px] font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ml-auto">
-                                    <Lock size={11} className="text-amber-400 shrink-0" /> Permanente (Master)
+                                {isMasterKey(empToken) ? (
+                                  <span className="h-6 px-2.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-md text-[11px] font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ml-auto shadow-sm">
+                                    <ShieldCheck size={13} className="text-rose-500 shrink-0" /> Permanente (Master)
                                   </span>
                                 ) : (
                                   <div className="flex items-center justify-end gap-1.5">
@@ -3795,6 +4040,12 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                       </div>
 
                       <div className="p-5 space-y-4 text-xs text-slate-300">
+                        {revokeModalError && (
+                          <div className="p-3 bg-rose-500/15 border border-rose-500/30 rounded-lg text-rose-300 text-xs font-semibold flex items-center gap-2">
+                            <AlertCircle size={15} className="shrink-0 text-rose-400" />
+                            <span>{revokeModalError}</span>
+                          </div>
+                        )}
                         <p>
                           Sei sicuro di voler eliminare <span className="font-bold text-white">DEFINITIVAMENTE</span> il token per:
                         </p>
@@ -3826,7 +4077,10 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                       <div className="bg-white/5 border-t border-white/5 p-4 flex justify-end gap-2">
                         <button
                           type="button"
-                          onClick={() => setTokenToConfirmRevoke(null)}
+                          onClick={() => {
+                            setRevokeModalError(null);
+                            setTokenToConfirmRevoke(null);
+                          }}
                           disabled={isRevokingToken}
                           className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-lg transition-colors cursor-pointer"
                         >
@@ -3836,9 +4090,15 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                           type="button"
                           onClick={async () => {
                             setIsRevokingToken(true);
-                            await handleRevokeToken(tokenToConfirmRevoke.token);
+                            const success = await handleRevokeToken(tokenToConfirmRevoke.token, {
+                              username: tokenToConfirmRevoke.username,
+                              candidateId: tokenToConfirmRevoke.candidateId,
+                              roleName: tokenToConfirmRevoke.roleName,
+                            });
                             setIsRevokingToken(false);
-                            setTokenToConfirmRevoke(null);
+                            if (success) {
+                              setTokenToConfirmRevoke(null);
+                            }
                           }}
                           disabled={isRevokingToken}
                           className="px-4 py-2 bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-md"
@@ -3857,6 +4117,237 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                   </div>
                 )}
               </AnimatePresence>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* TAB: TOKEN REVOCATI E RIPRISTINO */}
+          {activeTab === "revoked_tokens" && (
+            <div className="space-y-6 animate-fadeIn">
+              {sessionInfo && !sessionInfo.canManageTokens ? (
+                <div className="bg-[#161618] rounded-xl border border-red-500/20 p-8 text-center max-w-2xl mx-auto shadow-2xl backdrop-blur-md my-8">
+                  <div className="w-16 h-16 rounded-full bg-red-500/10 border border-red-500/30 flex items-center justify-center mx-auto mb-4 text-red-400">
+                    <Lock size={32} />
+                  </div>
+                  <h3 className="text-lg font-bold text-white mb-2">Accesso Riservato — Gestione Token Revocati</h3>
+                  <p className="text-slate-300 text-xs leading-relaxed mb-6">
+                    La visualizzazione e il ripristino dei Token Revocati sono riservati al personale con grado di <strong className="text-emerald-400 font-semibold">V. Direttore o superiore</strong>.
+                  </p>
+                  <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-900 border border-white/10 text-xs text-slate-400">
+                    <span>Il tuo Ruolo Attuale:</span>
+                    <span className="font-semibold text-slate-200">{sessionInfo.roleName || "In fase di verifica"}</span>
+                    <span className="text-[10px] text-red-400 bg-red-950/60 px-1.5 py-0.5 rounded border border-red-500/20 font-mono">
+                      Grado {sessionInfo.grade} &lt; 10
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Header Card */}
+                  <div className="bg-[#161618] rounded-xl border border-rose-500/20 shadow-xl p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400">
+                          <ShieldAlert size={20} />
+                        </div>
+                        <h2 className="text-lg font-bold text-white tracking-wide">
+                          Registro Token Revocati e Sblocco Accessi
+                        </h2>
+                      </div>
+                      <p className="text-xs text-slate-400 max-w-2xl leading-relaxed">
+                        I token presenti in questo registro sono stati revocati dall'amministratore. Quando un token è revocato, il sistema blocca automaticamente l'accesso e ne impedisce la rigenerazione automatica. Clicca su <strong className="text-rose-300">"Annulla Revoca / Ripristina"</strong> per rimuovere la revoca e ripristinare il token.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-3 shrink-0">
+                      <button
+                        onClick={() => fetchRevokedTokens()}
+                        disabled={isLoadingRevokedTokens}
+                        className="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold border border-white/10 flex items-center gap-2 transition-all cursor-pointer shadow-sm"
+                        title="Aggiorna lista token revocati"
+                      >
+                        <RefreshCw size={14} className={isLoadingRevokedTokens ? "animate-spin" : ""} />
+                        <span>Aggiorna</span>
+                      </button>
+
+                      <button
+                        onClick={() => setActiveTab("tokens")}
+                        className="px-3.5 py-2 rounded-lg bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 text-xs font-bold border border-indigo-500/30 flex items-center gap-2 transition-all cursor-pointer"
+                      >
+                        <Key size={14} />
+                        <span>Vai a Token Dipendenti</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Messaggi di feedback */}
+                  {revocationSuccessMsg && (
+                    <div className="bg-emerald-500/10 border border-emerald-500/30 rounded-xl p-4 text-xs text-emerald-300 flex items-center justify-between gap-3 shadow-md animate-fadeIn">
+                      <div className="flex items-center gap-2.5">
+                        <Check size={18} className="text-emerald-400 shrink-0" />
+                        <span className="font-semibold">{revocationSuccessMsg}</span>
+                      </div>
+                      <button
+                        onClick={() => setRevocationSuccessMsg(null)}
+                        className="text-emerald-400 hover:text-emerald-200 p-1 rounded-md"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )}
+
+                  {revocationErrorMsg && (
+                    <div className="bg-rose-500/10 border border-rose-500/30 rounded-xl p-4 text-xs text-rose-300 flex items-center justify-between gap-3 shadow-md animate-fadeIn">
+                      <div className="flex items-center gap-2.5">
+                        <AlertCircle size={18} className="text-rose-400 shrink-0" />
+                        <span className="font-semibold">{revocationErrorMsg}</span>
+                      </div>
+                      <button
+                        onClick={() => setRevocationErrorMsg(null)}
+                        className="text-rose-400 hover:text-rose-200 p-1 rounded-md"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Filtro e Statistiche */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 bg-[#121215] p-3.5 rounded-xl border border-white/5">
+                    <div className="relative w-full sm:w-80">
+                      <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+                      <input
+                        type="text"
+                        value={revokedTokenSearch}
+                        onChange={(e) => setRevokedTokenSearch(e.target.value)}
+                        placeholder="Cerca per token, utente o ID candidato..."
+                        className="w-full bg-[#18181c] border border-white/10 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-rose-500/50"
+                      />
+                      {revokedTokenSearch && (
+                        <button
+                          onClick={() => setRevokedTokenSearch("")}
+                          className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="text-xs text-slate-400 font-medium">
+                      Totale Token Revocati: <strong className="text-rose-400 font-bold">{revokedTokens.length}</strong>
+                    </div>
+                  </div>
+
+                  {/* Tabella o Lista Token Revocati */}
+                  {isLoadingRevokedTokens && revokedTokens.length === 0 ? (
+                    <div className="bg-[#161618] rounded-xl border border-white/5 p-12 text-center text-slate-400 space-y-3">
+                      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-rose-500 mx-auto" />
+                      <p className="text-xs font-medium">Caricamento registro token revocati...</p>
+                    </div>
+                  ) : revokedTokens.length === 0 ? (
+                    <div className="bg-[#161618] rounded-xl border border-emerald-500/20 p-12 text-center space-y-3 shadow-lg">
+                      <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center mx-auto">
+                        <Check size={24} />
+                      </div>
+                      <h3 className="text-sm font-bold text-white">Nessun Token Revocato Presente</h3>
+                      <p className="text-xs text-slate-400 max-w-md mx-auto">
+                        Al momento non è presente alcun token revocato nel sistema. Tutti i token generati o associati ai candidati sono regolarmente attivi.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="bg-[#161618] rounded-xl border border-white/5 shadow-xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse">
+                          <thead>
+                            <tr className="bg-[#111114] border-b border-white/10 text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                              <th className="py-3.5 px-4">Codice Token</th>
+                              <th className="py-3.5 px-4">Utente / Dipendente</th>
+                              <th className="py-3.5 px-4">ID Candidato</th>
+                              <th className="py-3.5 px-4">Data Revoca</th>
+                              <th className="py-3.5 px-4 text-right">Azioni Gestione</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-white/5 text-xs text-slate-300">
+                            {revokedTokens
+                              .filter((r) => {
+                                if (!revokedTokenSearch.trim()) return true;
+                                const query = revokedTokenSearch.toLowerCase();
+                                return (
+                                  r.token.toLowerCase().includes(query) ||
+                                  (r.username && r.username.toLowerCase().includes(query)) ||
+                                  (r.candidateId && r.candidateId.toLowerCase().includes(query))
+                                );
+                              })
+                              .map((r) => (
+                                <tr key={r.token} className="hover:bg-white/[0.02] transition-colors">
+                                  <td className="py-3.5 px-4 font-mono font-bold text-rose-300">
+                                    <span className="bg-rose-950/60 border border-rose-500/30 px-2.5 py-1 rounded text-xs tracking-wider">
+                                      {r.token}
+                                    </span>
+                                  </td>
+                                  <td className="py-3.5 px-4 font-bold text-white">
+                                    {r.username || <span className="text-slate-500 italic">Non specificato</span>}
+                                  </td>
+                                  <td className="py-3.5 px-4 font-mono text-slate-400">
+                                    {r.candidateId ? (
+                                      <span className="bg-slate-900 border border-white/10 px-2 py-0.5 rounded text-[11px]">
+                                        {r.candidateId}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-600">-</span>
+                                    )}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-slate-400">
+                                    {r.revokedAt ? new Date(r.revokedAt).toLocaleString("it-IT") : "-"}
+                                  </td>
+                                  <td className="py-3.5 px-4 text-right">
+                                    <div className="flex items-center justify-end gap-2">
+                                      <button
+                                        onClick={() => handleUnrevokeToken(r.token)}
+                                        disabled={unrevokingToken === r.token || permanentDeletingToken === r.token}
+                                        className="px-3 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                                        title="Ripristina il token rendendolo nuovamente utilizzabile"
+                                      >
+                                        {unrevokingToken === r.token ? (
+                                          <>
+                                            <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-emerald-300" />
+                                            <span>Ripristino...</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <RotateCcw size={13} />
+                                            <span>Ripristina</span>
+                                          </>
+                                        )}
+                                      </button>
+
+                                      <button
+                                        onClick={() => handlePermanentDeleteToken(r.token)}
+                                        disabled={unrevokingToken === r.token || permanentDeletingToken === r.token}
+                                        className="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+                                        title="Elimina definitivamente da Firestore impedendone il recupero"
+                                      >
+                                        {permanentDeletingToken === r.token ? (
+                                          <>
+                                            <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-rose-300" />
+                                            <span>Eliminazione...</span>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <Trash2 size={13} />
+                                            <span>Elimina Definitivamente</span>
+                                          </>
+                                        )}
+                                      </button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </div>
@@ -4249,7 +4740,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                         className="w-full bg-[#0A0A0B] border border-amber-500/30 rounded-lg py-2.5 px-3 text-sm text-white focus:outline-hidden focus:border-amber-400 focus:ring-1 focus:ring-amber-400 font-medium"
                       />
                       <p className="text-[10px] text-slate-400">
-                        Predefinito iniziale: <span className="font-mono text-slate-300 font-semibold">sblocco123</span>. Lascia il campo vuoto se non desideri modificarla.
+                        Lascia il campo vuoto se non desideri modificare la password di sblocco d'emergenza.
                       </p>
                     </div>
                   </div>
@@ -4500,8 +4991,76 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                         </div>
                       )}
 
+                      {/* CDA Voting Info / Results if any */}
+                      {cand.cdaData && (
+                        <div className="bg-[#0A0A0B] p-3.5 rounded-xl border border-white/5 space-y-2">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-400">
+                                Votazione CDA
+                              </span>
+                              {cand.cdaData.status === "IN_VOTING" && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                  <Clock size={10} className="animate-spin" /> In Votazione (24h)
+                                </span>
+                              )}
+                              {cand.cdaData.status === "APPROVED" && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  Esito Favorevole
+                                </span>
+                              )}
+                              {cand.cdaData.status === "REJECTED" && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                  Esito Contrario
+                                </span>
+                              )}
+                              {cand.cdaData.status === "TIE_PENDING" && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  Parità di Voti
+                                </span>
+                              )}
+                            </div>
+
+                            {(() => {
+                              const votesObj = cand.cdaData.votes || {};
+                              const vList = Object.values(votesObj) as CdaUserVote[];
+                              const fav = vList.filter((v) => v.decision === "FAVOREVOLE").length;
+                              const con = vList.filter((v) => v.decision === "CONTRARIO").length;
+                              const ast = vList.filter((v) => v.decision === "ASTENUTO").length;
+
+                              return (
+                                <div className="flex items-center gap-1.5 text-2xs font-bold">
+                                  <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1">
+                                    <ThumbsUp size={10} /> {fav} Favorevoli
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-300 border border-rose-500/20 flex items-center gap-1">
+                                    <ThumbsDown size={10} /> {con} Contrari
+                                  </span>
+                                  {ast > 0 && (
+                                    <span className="px-2 py-0.5 rounded bg-slate-500/10 text-slate-400 border border-slate-500/20">
+                                      {ast} Astenuti
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        </div>
+                      )}
+
                       {/* Admin Actions */}
                       <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/5">
+                        {(isMasterSession || isProprietarioUser) && (
+                          <button
+                            onClick={() => setViewingVotersCandidatura(cand)}
+                            className="px-3.5 py-2 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 font-extrabold text-xs rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                            title="Visualizza i voti dettagliati e chi ha votato per questa candidatura (Proprietari e Key Master)"
+                          >
+                            <Users size={14} className="text-indigo-400" />
+                            <span>Registro Votanti CDA</span>
+                          </button>
+                        )}
+
                         <button
                           onClick={() => handleOpenResetModal(cand)}
                           className="px-3.5 py-2 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-extrabold text-xs rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
@@ -4754,6 +5313,17 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
 
                       {/* Admin Actions */}
                       <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/5">
+                        {(isMasterSession || isProprietarioUser) && (
+                          <button
+                            onClick={() => setViewingVotersProposal(prop)}
+                            className="px-3.5 py-2 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 font-extrabold text-xs rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                            title="Visualizza chi ha votato e chi non ha ancora votato (Proprietari e Key Master)"
+                          >
+                            <Users size={14} className="text-indigo-400" />
+                            <span>Registro Votanti CDA</span>
+                          </button>
+                        )}
+
                         <button
                           onClick={() => {
                             setResettingProposalModal(prop);
@@ -5398,6 +5968,412 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
           </motion.div>
         </div>
       )}
+      {/* KEY MASTER CDA VOTERS LOG MODAL */}
+      {viewingVotersProposal && (() => {
+        const prop = viewingVotersProposal;
+        const votesObj = prop.cdaData?.votes || {};
+        const votesList: CdaUserVote[] = Object.values(votesObj) as CdaUserVote[];
+
+        // Helper to identify eligible CDA voters
+        const isCdaVoter = (emp: DiscordUserSession) => {
+          if (emp.isTestToken || emp.isExpired) return false;
+          if (emp.hasCdaAccess === false) return false;
+          if (emp.hasCdaAccess === true) return true;
+          const role = (emp.cdaRoleName || emp.roleName || "").trim();
+          return getCdaRank(role) >= 1 || isCdaRoleName(role);
+        };
+
+        const eligibleCdaVoters = employeeTokens.filter(isCdaVoter);
+
+        // Check if an employee has cast a vote on this proposal
+        const hasUserVoted = (emp: DiscordUserSession) => {
+          const empTokenNorm = (emp.token || "").toUpperCase().trim();
+          const empNameNorm = (emp.username || "").toLowerCase().trim();
+          const empRevNorm = ((emp as any).reviewerName || "").toLowerCase().trim();
+
+          return votesList.some((v) => {
+            const vTokenNorm = (v.voterToken || "").toUpperCase().trim();
+            const vNameNorm = (v.voterName || "").toLowerCase().trim();
+            if (vTokenNorm && empTokenNorm && vTokenNorm === empTokenNorm) return true;
+            if (vNameNorm && (vNameNorm === empNameNorm || (empRevNorm && vNameNorm === empRevNorm))) return true;
+            return false;
+          });
+        };
+
+        const votedMembers = votesList;
+        const notVotedMembers = eligibleCdaVoters.filter((emp) => !hasUserVoted(emp));
+
+        const favCount = votedMembers.filter((v) => v.decision === "FAVOREVOLE").length;
+        const conCount = votedMembers.filter((v) => v.decision === "CONTRARIO").length;
+        const astCount = votedMembers.filter((v) => v.decision === "ASTENUTO").length;
+
+        return (
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setViewingVotersProposal(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 cursor-pointer"
+          >
+            <motion.div
+              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-[#121217] border border-amber-500/40 rounded-3xl max-w-3xl w-full shadow-2xl relative cursor-default max-h-[88vh] flex flex-col overflow-hidden"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 sm:p-6 border-b border-slate-800 shrink-0 bg-[#121217]">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <Users size={20} />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 block">
+                      Controllo Votanti Key Master & Proprietario • Proposta ID: {prop.id}
+                    </span>
+                    <h3 className="text-base font-extrabold text-white">{prop.title}</h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingVotersProposal(null)}
+                  className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer transition-colors"
+                >
+                  <XCircle size={20} />
+                </button>
+              </div>
+
+              {/* Scrollable Content */}
+              <div className="p-5 sm:p-6 space-y-6 overflow-y-auto flex-1">
+                {/* Stats Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-[#0a0a0f] border border-slate-800 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Aventi Diritto</span>
+                    <span className="text-xl font-black text-white">{eligibleCdaVoters.length}</span>
+                  </div>
+                  <div className="bg-emerald-950/20 border border-emerald-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-emerald-400 uppercase block">Favorevoli</span>
+                    <span className="text-xl font-black text-emerald-300">{favCount}</span>
+                  </div>
+                  <div className="bg-rose-950/20 border border-rose-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-rose-400 uppercase block">Contrari</span>
+                    <span className="text-xl font-black text-rose-300">{conCount}</span>
+                  </div>
+                  <div className="bg-amber-950/20 border border-amber-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-amber-400 uppercase block">Non Hanno Votato</span>
+                    <span className="text-xl font-black text-amber-300">{notVotedMembers.length}</span>
+                  </div>
+                </div>
+
+                {/* Section 1: Hanno Votato */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-2">
+                      <CheckCircle2 size={16} /> Membri che HANNO votato ({votedMembers.length})
+                    </h4>
+                  </div>
+
+                  {votedMembers.length === 0 ? (
+                    <div className="bg-[#0a0a0f] p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400 italic">
+                      Nessun voto è stato ancora espresso per questa proposta.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {votedMembers.map((v, idx) => (
+                        <div key={idx} className="bg-[#0a0a0f] p-3 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-white">{v.voterName}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">({v.voterRole})</span>
+                            </div>
+                            {v.chosenRole && (
+                              <div className="text-[11px] text-teal-300 font-semibold">
+                                Grado espresso: {v.chosenRole}
+                              </div>
+                            )}
+                            {v.reason && (
+                              <div className="text-[11px] text-slate-300 italic bg-white/5 p-1.5 rounded border border-white/5 mt-1">
+                                "{v.reason}"
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border flex items-center gap-1 ${
+                              v.decision === "FAVOREVOLE"
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                : v.decision === "CONTRARIO"
+                                ? "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                                : "bg-slate-800 text-slate-300 border-slate-700"
+                            }`}>
+                              {v.decision === "FAVOREVOLE" && <ThumbsUp size={11} />}
+                              {v.decision === "CONTRARIO" && <ThumbsDown size={11} />}
+                              {v.decision === "ASTENUTO" && <Clock size={11} />}
+                              {v.decision}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-500">
+                              {new Date(v.timestamp).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" })}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Section 2: Non Hanno Votato */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-2">
+                      <Clock size={16} /> Membri CDA in attesa di voto ({notVotedMembers.length})
+                    </h4>
+                  </div>
+
+                  {notVotedMembers.length === 0 ? (
+                    <div className="bg-emerald-950/20 p-4 rounded-xl border border-emerald-500/30 text-center text-xs text-emerald-300 font-bold flex items-center justify-center gap-2">
+                      <CheckCircle2 size={16} /> Tutti i membri aventi diritto hanno espresso il loro voto!
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                      {notVotedMembers.map((emp, idx) => (
+                        <div key={idx} className="bg-[#0a0a0f] p-3 rounded-xl border border-amber-500/20 flex items-center justify-between gap-2 text-xs">
+                          <div>
+                            <div className="font-bold text-white">{emp.username}</div>
+                            <div className="text-[10px] text-slate-400">{emp.cdaRoleName || emp.roleName}</div>
+                          </div>
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <Clock size={10} /> Manca voto
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end shrink-0 bg-[#121217]">
+                <button
+                  type="button"
+                  onClick={() => setViewingVotersProposal(null)}
+                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold cursor-pointer transition-colors"
+                >
+                  Chiudi
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
+
+      {/* KEY MASTER & PROPRIETARIO CANDIDATURA VOTERS LOG MODAL */}
+      {viewingVotersCandidatura && (() => {
+        const cand = viewingVotersCandidatura;
+        const votesObj = cand.cdaData?.votes || {};
+        const votesList: CdaUserVote[] = Object.values(votesObj) as CdaUserVote[];
+
+        // Helper to identify eligible CDA voters
+        const isCdaVoter = (emp: DiscordUserSession) => {
+          if (emp.isTestToken || emp.isExpired) return false;
+          if (emp.hasCdaAccess === false) return false;
+          if (emp.hasCdaAccess === true) return true;
+          const role = (emp.cdaRoleName || emp.roleName || "").trim();
+          return getCdaRank(role) >= 1 || isCdaRoleName(role);
+        };
+
+        const eligibleCdaVoters = employeeTokens.filter(isCdaVoter);
+
+        // Check if an employee has cast a vote on this candidatura
+        const hasUserVoted = (emp: DiscordUserSession) => {
+          const empTokenNorm = (emp.token || "").toUpperCase().trim();
+          const empNameNorm = (emp.username || "").toLowerCase().trim();
+          const empRevNorm = ((emp as any).reviewerName || "").toLowerCase().trim();
+
+          return votesList.some((v) => {
+            const vTokenNorm = (v.voterToken || "").toUpperCase().trim();
+            const vNameNorm = (v.voterName || "").toLowerCase().trim();
+            if (vTokenNorm && empTokenNorm && vTokenNorm === empTokenNorm) return true;
+            if (vNameNorm && (vNameNorm === empNameNorm || (empRevNorm && vNameNorm === empRevNorm))) return true;
+            return false;
+          });
+        };
+
+        const votedMembers = votesList;
+        const notVotedMembers = eligibleCdaVoters.filter((emp) => !hasUserVoted(emp));
+
+        const favCount = votedMembers.filter((v) => v.decision === "FAVOREVOLE").length;
+        const conCount = votedMembers.filter((v) => v.decision === "CONTRARIO").length;
+        const astCount = votedMembers.filter((v) => v.decision === "ASTENUTO").length;
+
+        return (
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setViewingVotersCandidatura(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 cursor-pointer"
+          >
+            <motion.div
+              onClick={(e) => e.stopPropagation()}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-[#121217] border border-amber-500/40 rounded-3xl max-w-3xl w-full shadow-2xl relative cursor-default max-h-[88vh] flex flex-col overflow-hidden"
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 sm:p-6 border-b border-slate-800 shrink-0 bg-[#121217]">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+                    <Users size={20} />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-black uppercase tracking-widest text-amber-400 block">
+                      Controllo Votanti Key Master & Proprietario • Candidatura ID: {cand.id}
+                    </span>
+                    <h3 className="text-base font-extrabold text-white">
+                      {cand.fullName} — <span className="text-indigo-300 font-normal">{cand.desiredRole}</span>
+                    </h3>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setViewingVotersCandidatura(null)}
+                  className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer transition-colors"
+                >
+                  <XCircle size={20} />
+                </button>
+              </div>
+
+              {/* Scrollable Content */}
+              <div className="p-5 sm:p-6 space-y-6 overflow-y-auto flex-1">
+                {/* Info Bar */}
+                <div className="bg-[#0a0a0f] border border-slate-800 p-3.5 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-slate-400">Ruolo Attuale:</span>
+                    <span className="font-bold text-white">{cand.currentRole}</span>
+                    <span className="text-slate-600">→</span>
+                    <span className="text-slate-400">Ruolo Desiderato:</span>
+                    <span className="font-bold text-amber-300">{cand.desiredRole}</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400">
+                    Inviata il: {new Date(cand.submittedAt).toLocaleString("it-IT")}
+                  </div>
+                </div>
+
+                {/* Stats Summary Cards */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="bg-[#0a0a0f] border border-slate-800 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase block">Aventi Diritto CDA</span>
+                    <span className="text-xl font-black text-white">{eligibleCdaVoters.length}</span>
+                  </div>
+                  <div className="bg-emerald-950/20 border border-emerald-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-emerald-400 uppercase block">Favorevoli</span>
+                    <span className="text-xl font-black text-emerald-300">{favCount}</span>
+                  </div>
+                  <div className="bg-rose-950/20 border border-rose-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-rose-400 uppercase block">Contrari</span>
+                    <span className="text-xl font-black text-rose-300">{conCount}</span>
+                  </div>
+                  <div className="bg-amber-950/20 border border-amber-500/30 p-3 rounded-2xl text-center">
+                    <span className="text-[10px] font-bold text-amber-400 uppercase block">In Attesa di Voto</span>
+                    <span className="text-xl font-black text-amber-300">{notVotedMembers.length}</span>
+                  </div>
+                </div>
+
+                {/* Section 1: Hanno Votato */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-2">
+                      <CheckCircle2 size={16} /> Membri che HANNO votato ({votedMembers.length})
+                    </h4>
+                  </div>
+
+                  {votedMembers.length === 0 ? (
+                    <div className="bg-[#0a0a0f] p-4 rounded-xl border border-slate-800 text-center text-xs text-slate-400 italic">
+                      Nessun voto è stato ancora espresso per questa candidatura.
+                    </div>
+                  ) : (
+                    <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                      {votedMembers.map((v, idx) => (
+                        <div key={idx} className="bg-[#0a0a0f] p-3 rounded-xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                          <div className="space-y-0.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-white">{v.voterName}</span>
+                              <span className="text-[10px] text-slate-400 font-mono">({v.voterRole})</span>
+                            </div>
+                            {v.reason && (
+                              <div className="text-[11px] text-slate-300 italic bg-white/5 p-1.5 rounded border border-white/5 mt-1">
+                                "{v.reason}"
+                              </div>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 shrink-0">
+                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider border flex items-center gap-1 ${
+                              v.decision === "FAVOREVOLE"
+                                ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+                                : v.decision === "CONTRARIO"
+                                ? "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                                : "bg-slate-800 text-slate-300 border-slate-700"
+                            }`}>
+                              {v.decision === "FAVOREVOLE" && <ThumbsUp size={11} />}
+                              {v.decision === "CONTRARIO" && <ThumbsDown size={11} />}
+                              {v.decision === "ASTENUTO" && <Clock size={11} />}
+                              {v.decision}
+                            </span>
+                            <span className="text-[10px] font-mono text-slate-500">
+                              {new Date(v.timestamp).toLocaleString("it-IT", { dateStyle: "short", timeStyle: "short" })}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Section 2: Non Hanno Votato */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-800">
+                    <h4 className="text-xs font-black uppercase tracking-wider text-amber-400 flex items-center gap-2">
+                      <Clock size={16} /> Membri CDA in attesa di voto ({notVotedMembers.length})
+                    </h4>
+                  </div>
+
+                  {notVotedMembers.length === 0 ? (
+                    <div className="bg-emerald-950/20 p-4 rounded-xl border border-emerald-500/30 text-center text-xs text-emerald-300 font-bold flex items-center justify-center gap-2">
+                      <CheckCircle2 size={16} /> Tutti i membri aventi diritto hanno espresso il loro voto!
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                      {notVotedMembers.map((emp, idx) => (
+                        <div key={idx} className="bg-[#0a0a0f] p-3 rounded-xl border border-amber-500/20 flex items-center justify-between gap-2 text-xs">
+                          <div>
+                            <div className="font-bold text-white">{emp.username}</div>
+                            <div className="text-[10px] text-slate-400">{emp.cdaRoleName || emp.roleName}</div>
+                          </div>
+                          <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-amber-500/10 text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                            <Clock size={10} /> Manca voto
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end shrink-0 bg-[#121217]">
+                <button
+                  type="button"
+                  onClick={() => setViewingVotersCandidatura(null)}
+                  className="px-5 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-bold cursor-pointer transition-colors"
+                >
+                  Chiudi
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

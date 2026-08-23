@@ -31,7 +31,11 @@ import {
   Trash2,
   UserPlus,
   Building,
+  Check,
+  User,
 } from "lucide-react";
+
+const MASTER_OWNERS = ["Giovanni Manzo", "Simone Rizzus", "Antony Romano"];
 import {
   Candidatura,
   CdaUserVote,
@@ -97,7 +101,90 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
   const [actionReason, setActionReason] = useState<string>("");
   const [voteDecision, setVoteDecision] = useState<"FAVOREVOLE" | "CONTRARIO" | "ASTENUTO">("FAVOREVOLE");
   const [tieDecision, setTieDecision] = useState<"APPROVE" | "REJECT">("APPROVE");
+  const [reinstatementSelectedRole, setReinstatementSelectedRole] = useState<string>("");
+  const [voterOwnerName, setVoterOwnerName] = useState<string>("");
   const [submittingAction, setSubmittingAction] = useState<boolean>(false);
+
+  const getProposalReinstatementRoles = useCallback((prop?: CdaProposal | null): string[] => {
+    if (!prop) return ALL_EMS_PROMOTION_ROLES;
+    if (prop.reinstatementVotingRoles && prop.reinstatementVotingRoles.length > 0) {
+      return prop.reinstatementVotingRoles;
+    }
+    if (prop.targetProposedRole) {
+      const roles = prop.targetProposedRole.split(/[/,]/).map((r) => r.trim()).filter(Boolean);
+      if (roles.length > 0) return roles;
+    }
+    return ALL_EMS_PROMOTION_ROLES;
+  }, []);
+
+  const getUserVote = useCallback(
+    (
+      votesObj?: Record<string, CdaUserVote>,
+      userToken?: string,
+      username?: string,
+      selectedOwner?: string
+    ): CdaUserVote | null => {
+      if (!votesObj) return null;
+
+      if (selectedOwner) {
+        const ownerKey = selectedOwner.toLowerCase().replace(/\s+/g, "_");
+        if (votesObj[ownerKey]) return votesObj[ownerKey];
+        const match = Object.values(votesObj).find(
+          (v) => v.voterName?.toLowerCase() === selectedOwner.toLowerCase()
+        );
+        if (match) return match;
+      }
+
+      if (userToken && votesObj[userToken]) {
+        return votesObj[userToken];
+      }
+
+      if (username) {
+        const uKey = username.toLowerCase().replace(/\s+/g, "_");
+        if (votesObj[uKey]) return votesObj[uKey];
+        if (votesObj[username]) return votesObj[username];
+        const match = Object.values(votesObj).find(
+          (v) => v.voterName?.toLowerCase() === username.toLowerCase()
+        );
+        if (match) return match;
+      }
+
+      return null;
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (modalAction === "VOTE" && (selectedCand || selectedProp)) {
+      const cdaData = (selectedCand || selectedProp)?.cdaData || {};
+      const existing = getUserVote(
+        cdaData.votes,
+        permissions?.token,
+        permissions?.username,
+        voterOwnerName || undefined
+      );
+      if (existing) {
+        if (existing.decision) setVoteDecision(existing.decision);
+        if (existing.reason) setActionReason(existing.reason);
+        if (existing.chosenRole) setReinstatementSelectedRole(existing.chosenRole);
+      }
+    }
+  }, [modalAction, selectedCand, selectedProp, voterOwnerName, permissions, getUserVote]);
+
+  const openProposalActionModal = useCallback((
+    prop: CdaProposal,
+    action: "RENDER" | "DIRECT_APPROVE" | "DIRECT_RETURN" | "VOTE" | "PREVENTIVE" | "RESOLVE_TIE" | "CANCEL"
+  ) => {
+    setSelectedCand(null);
+    setSelectedProp(prop);
+    setModalAction(action);
+    setActionReason("");
+    setErrorMsg(null);
+    setVoteDecision("FAVOREVOLE");
+    setTieDecision("APPROVE");
+    const roles = getProposalReinstatementRoles(prop);
+    setReinstatementSelectedRole(roles[0] || "Tirocinante");
+  }, [getProposalReinstatementRoles]);
 
   // New Proposal Modal state
   const [showNewProposalModal, setShowNewProposalModal] = useState<boolean>(false);
@@ -108,6 +195,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
   const [newPropTargetName, setNewPropTargetName] = useState<string>("");
   const [newPropTargetCurrentRole, setNewPropTargetCurrentRole] = useState<string>("Tirocinante");
   const [newPropTargetProposedRole, setNewPropTargetProposedRole] = useState<string>("Infermiere");
+  const [newPropReinstatementVotingRoles, setNewPropReinstatementVotingRoles] = useState<string[]>(["Tirocinante", "Infermiere", "Medico"]);
 
   // Co-signers lookup & list
   const [coSignerPrefixInput, setCoSignerPrefixInput] = useState<string>("");
@@ -278,11 +366,20 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
         body: JSON.stringify({
           type: newPropType,
           proposerName: newPropProposer || permissions?.username || "Membro CDA",
-          title: newPropType === "PROMOZIONE" ? `Proposta di Promozione per ${newPropTargetName}` : newPropTitle,
+          title: newPropType === "PROMOZIONE"
+            ? `Proposta di Promozione per ${newPropTargetName}`
+            : newPropType === "REINTEGRO"
+            ? `Proposta di Reintegro per ${newPropTargetName}`
+            : newPropTitle,
           description: newPropDesc,
-          targetEmployeeName: newPropType === "PROMOZIONE" ? newPropTargetName : undefined,
-          targetCurrentRole: newPropType === "PROMOZIONE" ? newPropTargetCurrentRole : undefined,
-          targetProposedRole: newPropType === "PROMOZIONE" ? newPropTargetProposedRole : undefined,
+          targetEmployeeName: (newPropType === "PROMOZIONE" || newPropType === "REINTEGRO") ? newPropTargetName : undefined,
+          targetCurrentRole: (newPropType === "PROMOZIONE" || newPropType === "REINTEGRO") ? newPropTargetCurrentRole : undefined,
+          targetProposedRole: newPropType === "PROMOZIONE"
+            ? newPropTargetProposedRole
+            : newPropType === "REINTEGRO"
+            ? newPropReinstatementVotingRoles.join(" / ")
+            : undefined,
+          reinstatementVotingRoles: newPropType === "REINTEGRO" ? newPropReinstatementVotingRoles : undefined,
           coSigners: coSignersList,
         }),
       });
@@ -297,8 +394,9 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
         setNewPropTitle("");
         setNewPropDesc("");
         setNewPropTargetName("");
-        setNewPropTargetCurrentRole("");
-        setNewPropTargetProposedRole("");
+        setNewPropTargetCurrentRole("Tirocinante");
+        setNewPropTargetProposedRole("Infermiere");
+        setNewPropReinstatementVotingRoles(["Tirocinante", "Infermiere", "Medico"]);
         setCoSignersList([]);
         setCoSignerPrefixInput("");
         fetchCdaData();
@@ -322,6 +420,25 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
     return () => clearInterval(pollInterval);
   }, [activeToken, fetchCdaData]);
+
+  // Keyboard shortcut: Escape key closes active modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (modalAction) {
+          cancelActionModal();
+        } else if (detailProp) {
+          setDetailProp(null);
+        } else if (detailCand) {
+          setDetailCand(null);
+        } else if (showNewProposalModal) {
+          setShowNewProposalModal(false);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [modalAction, detailProp, detailCand, showNewProposalModal]);
 
   // Handle direct token submission
   const handleVerifyToken = async (e: React.FormEvent) => {
@@ -382,6 +499,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
     setDetailCand(null);
     setDetailProp(null);
     setErrorMsg(null);
+    setVoterOwnerName("");
   };
 
   // Cancel action modal helper (keeps detail card open if user was viewing it)
@@ -391,6 +509,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
     setModalAction(null);
     setActionReason("");
     setErrorMsg(null);
+    setVoterOwnerName("");
   };
 
   // Helper to check if an item was submitted by the logged in member
@@ -449,6 +568,17 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
   const handleProposalVote = async () => {
     if (!selectedProp || !activeToken) return;
+
+    if (permissions?.isMaster && !voterOwnerName) {
+      setErrorMsg("Seleziona per quale Proprietario stai votando (Giovanni Manzo, Simone Rizzus o Antony Romano).");
+      return;
+    }
+
+    if (selectedProp.type === "REINTEGRO" && voteDecision === "FAVOREVOLE" && !reinstatementSelectedRole) {
+      setErrorMsg("Seleziona il grado con il quale la persona deve essere reintegrata.");
+      return;
+    }
+
     setSubmittingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -463,6 +593,8 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
         body: JSON.stringify({
           decision: voteDecision,
           reason: actionReason,
+          chosenRole: selectedProp.type === "REINTEGRO" && voteDecision === "FAVOREVOLE" ? reinstatementSelectedRole : undefined,
+          voterName: voterOwnerName || undefined,
         }),
       });
       const data = await parseJsonResponse(res);
@@ -483,6 +615,12 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
   const handleProposalDirectApprove = async () => {
     if (!selectedProp || !activeToken) return;
+
+    if (selectedProp.type === "REINTEGRO" && !reinstatementSelectedRole) {
+      setErrorMsg("Seleziona il grado con il quale la persona deve essere reintegrata.");
+      return;
+    }
+
     setSubmittingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -494,7 +632,10 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
           "Content-Type": "application/json",
           Authorization: `Bearer ${activeToken}`,
         },
-        body: JSON.stringify({ reason: actionReason }),
+        body: JSON.stringify({
+          reason: actionReason,
+          chosenRole: selectedProp.type === "REINTEGRO" ? reinstatementSelectedRole : undefined,
+        }),
       });
       const data = await parseJsonResponse(res);
 
@@ -545,6 +686,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
   const handleProposalPreventive = async () => {
     if (!selectedProp || !activeToken) return;
+
     setSubmittingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -556,7 +698,9 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
           "Content-Type": "application/json",
           Authorization: `Bearer ${activeToken}`,
         },
-        body: JSON.stringify({ reason: actionReason }),
+        body: JSON.stringify({
+          reason: actionReason,
+        }),
       });
       const data = await parseJsonResponse(res);
 
@@ -576,6 +720,12 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
   const handleProposalResolveTie = async () => {
     if (!selectedProp || !activeToken) return;
+
+    if (selectedProp.type === "REINTEGRO" && tieDecision === "APPROVE" && !reinstatementSelectedRole) {
+      setErrorMsg("Seleziona il grado con il quale la persona deve essere reintegrata.");
+      return;
+    }
+
     setSubmittingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -587,7 +737,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
           "Content-Type": "application/json",
           Authorization: `Bearer ${activeToken}`,
         },
-        body: JSON.stringify({ decision: tieDecision, reason: actionReason }),
+        body: JSON.stringify({
+          decision: tieDecision,
+          reason: actionReason,
+          chosenRole: selectedProp.type === "REINTEGRO" && tieDecision === "APPROVE" ? reinstatementSelectedRole : undefined,
+        }),
       });
       const data = await parseJsonResponse(res);
 
@@ -713,6 +867,12 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
   const handleVote = async () => {
     if (!selectedCand || !activeToken) return;
+
+    if (permissions?.isMaster && !voterOwnerName) {
+      setErrorMsg("Seleziona per quale Proprietario stai votando (Giovanni Manzo, Simone Rizzus o Antony Romano).");
+      return;
+    }
+
     setSubmittingAction(true);
     setErrorMsg(null);
     setSuccessMsg(null);
@@ -724,7 +884,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
           "Content-Type": "application/json",
           Authorization: `Bearer ${activeToken}`,
         },
-        body: JSON.stringify({ decision: voteDecision, reason: actionReason }),
+        body: JSON.stringify({
+          decision: voteDecision,
+          reason: actionReason,
+          voterName: voterOwnerName || undefined,
+        }),
       });
       const data = await parseJsonResponse(res);
 
@@ -1216,6 +1380,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
               const cdaStatus = cdaData.status || "PENDING_RENDER";
               const stats = getVoteStats(cdaData.votes);
               const isMine = isMyCandidatura(cand);
+              const cardUserVote = getUserVote(cdaData.votes, permissions?.token, permissions?.username);
 
               return (
                 <div
@@ -1240,6 +1405,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                       {cdaStatus === "IN_VOTING" && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-extrabold border border-amber-500/40 animate-pulse">
                           <Vote size={11} /> Votazione (24h)
+                        </span>
+                      )}
+                      {cdaStatus === "IN_VOTING" && cardUserVote && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/25 text-indigo-200 text-[10px] font-extrabold border border-indigo-500/40">
+                          <CheckCircle2 size={11} className="text-emerald-400" /> Votato ({cardUserVote.decision})
                         </span>
                       )}
                       {cdaStatus === "TIE_PENDING" && (
@@ -1353,6 +1523,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
               const cdaStatus = cdaData.status || "PENDING_RENDER";
               const stats = getVoteStats(cdaData.votes);
               const isMine = isMyProposal(prop);
+              const cardUserVote = getUserVote(cdaData.votes, permissions?.token, permissions?.username);
 
               return (
                 <div
@@ -1371,12 +1542,14 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span
                         className={`px-2 py-0.5 rounded-full text-[9px] font-extrabold uppercase ${
-                          prop.type === "PROMOZIONE"
+                          prop.type === "REINTEGRO"
+                            ? "bg-teal-500/20 text-teal-300 border border-teal-500/30"
+                            : prop.type === "PROMOZIONE"
                             ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
                             : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
                         }`}
                       >
-                        {prop.type === "PROMOZIONE" ? "Promozione" : "Proposta"}
+                        {prop.type === "REINTEGRO" ? "Reintegro" : prop.type === "PROMOZIONE" ? "Promozione" : "Proposta"}
                       </span>
 
                       {cdaStatus === "PENDING_RENDER" && (
@@ -1387,6 +1560,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                       {cdaStatus === "IN_VOTING" && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-extrabold border border-amber-500/40 animate-pulse">
                           <Vote size={11} /> Votazione (24h)
+                        </span>
+                      )}
+                      {cdaStatus === "IN_VOTING" && cardUserVote && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-indigo-500/25 text-indigo-200 text-[10px] font-extrabold border border-indigo-500/40">
+                          <CheckCircle2 size={11} className="text-emerald-400" /> Votato ({cardUserVote.decision})
                         </span>
                       )}
                       {cdaStatus === "TIE_PENDING" && (
@@ -1430,6 +1608,9 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                       {prop.type === "PROMOZIONE" && prop.targetEmployeeName && (
                         <span className="text-purple-300"> • Per: <strong>{prop.targetEmployeeName}</strong></span>
                       )}
+                      {prop.type === "REINTEGRO" && prop.targetEmployeeName && (
+                        <span className="text-teal-300"> • Reintegro per: <strong>{prop.targetEmployeeName}</strong></span>
+                      )}
                     </p>
                   </div>
 
@@ -1437,7 +1618,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                   <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-[10px] text-slate-400 gap-2">
                     <div className="flex items-center gap-1 text-slate-400 font-medium">
                       <Clock size={11} className="text-slate-500" />
-                      <span>{new Date(prop.createdAt).toLocaleDateString("it-IT")}</span>
+                      <span>{prop.submittedAt ? new Date(prop.submittedAt).toLocaleDateString("it-IT") : (prop.createdAt ? new Date(prop.createdAt).toLocaleDateString("it-IT") : "-")}</span>
                     </div>
 
                     <div className="flex items-center gap-1.5">
@@ -1466,14 +1647,21 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
       {/* CREA NUOVA PROPOSTA CDA MODAL */}
       <AnimatePresence>
         {showNewProposalModal && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowNewProposalModal(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 cursor-pointer"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#121217] border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-2xl w-full shadow-2xl space-y-6 my-8 relative overflow-hidden"
+              className="bg-[#121217] border border-amber-500/40 rounded-3xl max-w-2xl w-full shadow-2xl relative overflow-hidden cursor-default max-h-[88vh] flex flex-col"
             >
-              <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              {/* Header */}
+              <div className="flex items-center justify-between p-5 sm:p-6 border-b border-slate-800 shrink-0 bg-[#121217]">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
                     <FilePlus size={20} />
@@ -1486,41 +1674,55 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                   </div>
                 </div>
                 <button
+                  type="button"
                   onClick={() => setShowNewProposalModal(false)}
-                  className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+                  className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer transition-colors"
                 >
                   <XCircle size={20} />
                 </button>
               </div>
 
-              <form onSubmit={handleSubmitProposal} className="space-y-5">
-                {/* Proposal Type Switcher */}
+              <form onSubmit={handleSubmitProposal} className="flex flex-col flex-1 overflow-hidden">
+                {/* Scrollable Body */}
+                <div className="p-5 sm:p-6 space-y-5 overflow-y-auto flex-1">
+                  {/* Proposal Type Switcher */}
                 <div className="space-y-2">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
                     Tipo di Proposta
                   </label>
-                  <div className="grid grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <button
                       type="button"
                       onClick={() => setNewPropType("GENERICA")}
-                      className={`p-3.5 rounded-2xl border text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                      className={`p-3 rounded-2xl border text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-all ${
                         newPropType === "GENERICA"
                           ? "bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-md"
-                          : "bg-[#0a0a0f] text-slate-400 border-slate-800"
+                          : "bg-[#0a0a0f] text-slate-400 border-slate-800 hover:border-slate-700"
                       }`}
                     >
-                      <FileText size={16} /> Proposta Generica
+                      <FileText size={15} /> Generica
                     </button>
                     <button
                       type="button"
                       onClick={() => setNewPropType("PROMOZIONE")}
-                      className={`p-3.5 rounded-2xl border text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                      className={`p-3 rounded-2xl border text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-all ${
                         newPropType === "PROMOZIONE"
-                          ? "bg-amber-500/20 text-amber-300 border-amber-500/50 shadow-md"
-                          : "bg-[#0a0a0f] text-slate-400 border-slate-800"
+                          ? "bg-purple-500/20 text-purple-300 border-purple-500/50 shadow-md"
+                          : "bg-[#0a0a0f] text-slate-400 border-slate-800 hover:border-slate-700"
                       }`}
                     >
-                      <Award size={16} /> Proposta di Promozione EMS
+                      <Award size={15} /> Promozione EMS
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setNewPropType("REINTEGRO")}
+                      className={`p-3 rounded-2xl border text-xs font-extrabold flex items-center justify-center gap-2 cursor-pointer transition-all ${
+                        newPropType === "REINTEGRO"
+                          ? "bg-teal-500/20 text-teal-300 border-teal-500/50 shadow-md"
+                          : "bg-[#0a0a0f] text-slate-400 border-slate-800 hover:border-slate-700"
+                      }`}
+                    >
+                      <RotateCcw size={15} /> Reintegro EMS
                     </button>
                   </div>
                 </div>
@@ -1536,10 +1738,130 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     required
                     value={newPropProposer}
                     onChange={(e) => setNewPropProposer(e.target.value)}
-                    placeholder="Es: Mario Rossi"
+                    placeholder="Inserisci nome del proponente"
                     className="w-full bg-[#0a0a0f] border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-amber-500"
                   />
                 </div>
+
+                {/* Reinstatement Specific Fields */}
+                {newPropType === "REINTEGRO" && (
+                  <div className="bg-[#0a0a0f] border border-teal-500/30 rounded-2xl p-4 space-y-4">
+                    <div className="flex items-center gap-2 text-xs font-bold text-teal-300 uppercase tracking-wider">
+                      <RotateCcw size={16} /> Dettagli Reintegro Personale EMS
+                    </div>
+
+                    {/* Target Name */}
+                    <div className="space-y-2">
+                      <label htmlFor="reinstatement-target-name" className="text-xs font-bold text-slate-300 block">
+                        Nome e Cognome Persona da Reintegrare <span className="text-amber-400">*</span>
+                      </label>
+                      <input
+                        id="reinstatement-target-name"
+                        type="text"
+                        required
+                        value={newPropTargetName}
+                        onChange={(e) => setNewPropTargetName(e.target.value)}
+                        placeholder="Inserisci nome e cognome completo"
+                        className="w-full bg-[#13131a] border border-slate-700 rounded-xl p-3 text-xs text-white focus:outline-none focus:border-teal-500"
+                      />
+                    </div>
+
+                    {/* Previous Role */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between gap-1">
+                        <label htmlFor="reinstatement-prev-role" className="text-xs font-bold text-slate-300 block">
+                          Ruolo Precedente Ricoperto <span className="text-amber-400">*</span>
+                        </label>
+                        {(() => {
+                          const badge = getRoleBadgeStyle(newPropTargetCurrentRole);
+                          return (
+                            <span className={`px-2.5 py-0.5 rounded-md text-[11px] font-bold ${badge.className}`} style={badge.style}>
+                              {newPropTargetCurrentRole}
+                            </span>
+                          );
+                        })()}
+                      </div>
+                      <select
+                        id="reinstatement-prev-role"
+                        value={newPropTargetCurrentRole}
+                        onChange={(e) => setNewPropTargetCurrentRole(e.target.value)}
+                        className="w-full bg-[#13131a] border border-slate-700 rounded-xl p-3 text-xs font-bold text-white focus:outline-none focus:border-teal-500"
+                      >
+                        {ALL_EMS_PROMOTION_ROLES.map((role) => (
+                          <option key={role} value={role} className="bg-slate-900 text-white font-medium">
+                            {role}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Roles to Vote Among */}
+                    <div className="space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-xs font-bold text-teal-300 block uppercase tracking-wider">
+                          Ruoli tra cui Votare <span className="text-amber-400">*</span>
+                        </label>
+                        <span className="text-[10px] text-slate-400">
+                          Selezionati: {newPropReinstatementVotingRoles.length}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400">
+                        Seleziona i ruoli candidati tra cui il CDA potrà esprimere la votazione per il reintegro:
+                      </p>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-48 overflow-y-auto p-2 bg-[#13131a] rounded-xl border border-slate-800">
+                        {ALL_EMS_PROMOTION_ROLES.map((role) => {
+                          const isSelected = newPropReinstatementVotingRoles.includes(role);
+                          return (
+                            <button
+                              key={role}
+                              type="button"
+                              onClick={() => {
+                                if (isSelected) {
+                                  if (newPropReinstatementVotingRoles.length > 1) {
+                                    setNewPropReinstatementVotingRoles(
+                                      newPropReinstatementVotingRoles.filter((r) => r !== role)
+                                    );
+                                  }
+                                } else {
+                                  setNewPropReinstatementVotingRoles([
+                                    ...newPropReinstatementVotingRoles,
+                                    role,
+                                  ]);
+                                }
+                              }}
+                              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all text-left flex items-center justify-between border cursor-pointer ${
+                                isSelected
+                                  ? "bg-teal-500/20 border-teal-500/60 text-teal-200 shadow-sm"
+                                  : "bg-[#0a0a0f] border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200"
+                              }`}
+                            >
+                              <span className="truncate">{role}</span>
+                              {isSelected ? (
+                                <CheckCircle2 size={13} className="text-teal-400 shrink-0 ml-1" />
+                              ) : (
+                                <span className="w-3 h-3 rounded-full border border-slate-700 shrink-0 ml-1" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      {/* Selected Roles Preview Badges */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        <span className="text-[10px] text-slate-500 font-bold self-center uppercase">Ruoli opzione:</span>
+                        {newPropReinstatementVotingRoles.map((role) => {
+                          const badge = getRoleBadgeStyle(role);
+                          return (
+                            <span key={role} className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${badge.className}`} style={badge.style}>
+                              {role}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Promotion Specific Fields */}
                 {newPropType === "PROMOZIONE" && (
@@ -1718,19 +2040,21 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     </div>
                   )}
                 </div>
+                </div>
 
-                <div className="flex items-center justify-end gap-3 pt-4 border-t border-slate-800">
+                {/* Sticky Footer */}
+                <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end gap-3 shrink-0 bg-[#121217]">
                   <button
                     type="button"
                     onClick={() => setShowNewProposalModal(false)}
-                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold cursor-pointer"
+                    className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-bold cursor-pointer transition-colors"
                   >
                     Annulla
                   </button>
                   <button
                     type="submit"
                     disabled={submittingProposal}
-                    className="px-6 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-amber-950/50 border border-amber-300/40 flex items-center gap-2 cursor-pointer"
+                    className="px-6 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-black rounded-xl text-xs uppercase tracking-wider shadow-lg shadow-amber-950/50 border border-amber-300/40 flex items-center gap-2 cursor-pointer transition-all"
                   >
                     {submittingProposal ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
                     <span>Invia Proposta CDA</span>
@@ -1744,30 +2068,63 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
       {/* ACTION MODAL DIALOG (Candidature & Proposte) */}
       <AnimatePresence>
-        {(selectedCand || selectedProp) && modalAction && (
-          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
+        {(selectedCand || selectedProp) && modalAction && (() => {
+          const activeTarget = selectedCand || selectedProp;
+          const activeCdaData = activeTarget?.cdaData || {};
+          const activeExistingVote = getUserVote(
+            activeCdaData.votes,
+            permissions?.token,
+            permissions?.username,
+            voterOwnerName || undefined
+          );
+
+          return (
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) cancelActionModal();
+            }}
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn cursor-pointer"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ scale: 0.95, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-[#141419] border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-lg w-full space-y-6 shadow-2xl relative"
+              className="bg-[#141419] border border-amber-500/40 rounded-3xl max-w-lg w-full shadow-2xl relative cursor-default max-h-[88vh] flex flex-col overflow-hidden"
             >
-              <div className="space-y-1 text-left">
-                <span className="text-[10px] font-extrabold uppercase tracking-widest text-amber-400">
-                  Operazione CDA • {selectedCand ? selectedCand.fullName : selectedProp?.title}
-                </span>
-                <h3 className="text-xl font-black text-white">
-                  {modalAction === "RENDER" && "Reindirizza a Votazione CDA (Timer 24h)"}
-                  {modalAction === "DIRECT_APPROVE" && "Accetta Direttamente"}
-                  {modalAction === "DIRECT_RETURN" && "Respinti / Rimanda Indietro"}
-                  {modalAction === "VOTE" && "Esprimi il tuo Voto CDA"}
-                  {modalAction === "PREVENTIVE" && "Chiusura Preventiva Votazione (<24h)"}
-                  {modalAction === "RESOLVE_TIE" && "Risoluzione Parità Voti"}
-                  {modalAction === "CANCEL" && "Ritira Proposta CDA"}
-                </h3>
+              {/* Header */}
+              <div className="p-5 sm:p-6 pb-4 border-b border-slate-800 flex items-start justify-between gap-3 shrink-0 bg-[#141419]">
+                <div className="space-y-1 text-left">
+                  <span className="text-[10px] font-extrabold uppercase tracking-widest text-amber-400">
+                    Operazione CDA • {selectedCand ? selectedCand.fullName : selectedProp?.title}
+                  </span>
+                  <h3 className="text-xl font-black text-white">
+                    {modalAction === "RENDER" && "Reindirizza a Votazione CDA (Timer 24h)"}
+                    {modalAction === "DIRECT_APPROVE" && "Accetta Direttamente (Proprietario)"}
+                    {modalAction === "DIRECT_RETURN" && "Respingi / Rimanda Indietro (Proprietario)"}
+                    {modalAction === "VOTE" && (
+                      activeExistingVote
+                        ? (voterOwnerName ? `Vuoi cambiare il voto di ${voterOwnerName}?` : "Vuoi cambiare il tuo voto CDA?")
+                        : "Esprimi il tuo Voto CDA"
+                    )}
+                    {modalAction === "PREVENTIVE" && "Chiusura Preventiva Votazione (Proprietario)"}
+                    {modalAction === "RESOLVE_TIE" && "Risoluzione Parità Voti (Proprietario)"}
+                    {modalAction === "CANCEL" && "Annulla / Ritira Proposta CDA (Proprietario)"}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={cancelActionModal}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer shrink-0 transition-colors"
+                  title="Chiudi Finestra"
+                >
+                  <XCircle size={22} />
+                </button>
               </div>
 
-              {errorMsg && (
+              {/* Scrollable Body */}
+              <div className="p-5 sm:p-6 space-y-5 overflow-y-auto flex-1">
+                {errorMsg && (
                 <div className="bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs rounded-xl p-3 flex items-center gap-2">
                   <AlertTriangle size={16} className="text-rose-400 shrink-0" />
                   <span>{errorMsg}</span>
@@ -1776,11 +2133,80 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
 
               {/* Vote Choice */}
               {modalAction === "VOTE" && (
-                <div className="space-y-3">
-                  <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
-                    Seleziona la tua decisione di voto:
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
+                <div className="space-y-4">
+                  {/* Notice banner if already voted */}
+                  {activeExistingVote ? (
+                    <div className="bg-amber-500/15 border border-amber-500/40 rounded-2xl p-4 text-left space-y-1.5 animate-fadeIn">
+                      <div className="flex items-center gap-2 text-amber-300 font-extrabold text-xs uppercase tracking-wider">
+                        <CheckCircle2 size={16} className="text-emerald-400 shrink-0" />
+                        <span>
+                          {voterOwnerName
+                            ? `${voterOwnerName} ha già votato per questa proposta!`
+                            : "Hai già votato per questa proposta!"}
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-200">
+                        Voto attualmente registrato:{" "}
+                        <strong className="text-white uppercase font-black bg-amber-500/30 px-2 py-0.5 rounded border border-amber-400/40">
+                          {activeExistingVote.decision}
+                        </strong>
+                        {activeExistingVote.chosenRole && (
+                          <span className="ml-1 text-teal-300 font-bold">
+                            ({activeExistingVote.chosenRole})
+                          </span>
+                        )}
+                      </p>
+                      <p className="text-[11px] text-amber-200/90 pt-0.5">
+                        👇 <strong>Vuoi cambiare il tuo voto?</strong> Seleziona una nuova decisione qui sotto e clicca su <em>&ldquo;Conferma Modifica Voto&rdquo;</em>.
+                      </p>
+                    </div>
+                  ) : voterOwnerName ? (
+                    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 text-left text-xs text-slate-400">
+                      Nessun voto registrato ancora per <strong className="text-white">{voterOwnerName}</strong>.
+                    </div>
+                  ) : null}
+
+                  {/* Master Key Owner Selector */}
+                  {permissions?.isMaster && (
+                    <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 space-y-2.5 text-left">
+                      <label className="text-xs font-extrabold text-amber-300 uppercase tracking-wider flex items-center gap-1.5">
+                        <Key size={15} className="text-amber-400 shrink-0" />
+                        Seleziona Proprietario (Master Key) <span className="text-rose-400 font-black">*</span>
+                      </label>
+                      <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                        Stai votando con Chiave Master. Seleziona per quale Proprietario stai registrando il voto CDA:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
+                        {MASTER_OWNERS.map((ownerName) => {
+                          const isSelected = voterOwnerName === ownerName;
+                          return (
+                            <button
+                              key={ownerName}
+                              type="button"
+                              onClick={() => setVoterOwnerName(ownerName)}
+                              className={`flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all border cursor-pointer ${
+                                isSelected
+                                  ? "bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 border-amber-300 shadow-md shadow-amber-950/50 scale-[1.02]"
+                                  : "bg-slate-900/90 text-amber-100 border-amber-500/30 hover:border-amber-400/60 hover:bg-amber-500/10"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 truncate">
+                                <User size={14} className={isSelected ? "text-slate-950" : "text-amber-400"} />
+                                <span className="truncate">{ownerName}</span>
+                              </div>
+                              {isSelected && <Check size={14} className="shrink-0 text-slate-950" strokeWidth={3} />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
+                      Seleziona la tua decisione di voto:
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
                       onClick={() => setVoteDecision("FAVOREVOLE")}
@@ -1818,13 +2244,14 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     </button>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
               {/* Tie resolution Choice */}
               {modalAction === "RESOLVE_TIE" && (
                 <div className="space-y-3">
                   <label className="text-xs font-bold uppercase tracking-wider text-slate-300 block">
-                    Decisione finale di Risoluzione Parità (Vice Presidente CDA+):
+                    Decisione finale di Risoluzione Parità (Riservata ai Proprietari):
                   </label>
                   <div className="grid grid-cols-2 gap-3">
                     <button
@@ -1854,6 +2281,42 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                 </div>
               )}
 
+              {/* Role Selection for Reinstatement Proposals */}
+              {selectedProp && selectedProp.type === "REINTEGRO" && (
+                (modalAction === "VOTE" && voteDecision === "FAVOREVOLE") ||
+                modalAction === "DIRECT_APPROVE" ||
+                (modalAction === "RESOLVE_TIE" && tieDecision === "APPROVE")
+              ) && (
+                <div className="bg-[#0a0a0f] border border-teal-500/30 p-4 rounded-2xl space-y-2.5 text-left">
+                  <label className="text-xs font-bold uppercase tracking-wider text-teal-300 flex items-center gap-1.5">
+                    <UserCheck size={14} className="text-teal-400" />
+                    Seleziona Grado di Reintegro <span className="text-rose-400 font-extrabold">* (Obbligatorio)</span>
+                  </label>
+                  <p className="text-[11px] text-slate-400">
+                    Seleziona il grado con il quale la persona (<strong className="text-white">{selectedProp.targetEmployeeName || "Utente"}</strong>) deve essere reintegrata:
+                  </p>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {getProposalReinstatementRoles(selectedProp).map((r) => {
+                      const isSelected = reinstatementSelectedRole === r;
+                      return (
+                        <button
+                          key={r}
+                          type="button"
+                          onClick={() => setReinstatementSelectedRole(r)}
+                          className={`px-3 py-2 rounded-xl text-xs font-black transition-all cursor-pointer border ${
+                            isSelected
+                              ? "bg-teal-500 text-slate-950 border-teal-300 shadow-md shadow-teal-950/50 scale-105"
+                              : "bg-slate-900 text-slate-300 border-slate-700 hover:border-slate-500"
+                          }`}
+                        >
+                          {r}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               {/* Reason input box */}
               {(modalAction === "DIRECT_APPROVE" ||
                 modalAction === "DIRECT_RETURN" ||
@@ -1873,7 +2336,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     </span>
                     {permissions?.isMaster && (
                       <span className="text-[10px] text-amber-400 font-normal">
-                        Opzionale per Key Master
+                        Opzionale per Key Master / Proprietario
                       </span>
                     )}
                   </label>
@@ -1893,9 +2356,10 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                   />
                 </div>
               )}
+              </div>
 
-              {/* Confirm / Cancel Buttons */}
-              <div className="flex items-center justify-end gap-3 pt-2">
+              {/* Confirm / Cancel Buttons Sticky Footer */}
+              <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end gap-3 shrink-0 bg-[#141419]">
                 <button
                   type="button"
                   onClick={cancelActionModal}
@@ -1932,6 +2396,10 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     <>
                       <RefreshCw size={14} className="animate-spin" /> Elaborazione...
                     </>
+                  ) : modalAction === "VOTE" && activeExistingVote ? (
+                    <>
+                      <CheckCircle2 size={14} /> Conferma Modifica Voto
+                    </>
                   ) : (
                     <>
                       <CheckCircle2 size={14} /> Conferma Operazione
@@ -1941,21 +2409,28 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
               </div>
             </motion.div>
           </div>
-        )}
+          );
+        })()}
       </AnimatePresence>
 
       {/* DETAIL MODAL CANDIDATURA */}
       <AnimatePresence>
         {detailCand && !modalAction && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setDetailCand(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 cursor-pointer"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#121217] border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-2xl w-full shadow-2xl space-y-6 my-8 relative overflow-hidden max-h-[90vh] overflow-y-auto"
+              className="bg-[#121217] border border-amber-500/40 rounded-3xl max-w-2xl w-full shadow-2xl relative cursor-default max-h-[88vh] flex flex-col overflow-hidden"
             >
               {/* Header */}
-              <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center justify-between p-5 sm:p-6 pb-4 border-b border-slate-800 shrink-0 bg-[#121217]">
                 <div className="flex items-center gap-3">
                   <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
                     <UserCheck size={22} />
@@ -1987,11 +2462,12 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                 const cdaData = detailCand.cdaData || {};
                 const cdaStatus = cdaData.status || "PENDING_RENDER";
                 const stats = getVoteStats(cdaData.votes);
-                const userVote = cdaData.votes?.[permissions?.token || ""] || cdaData.votes?.[permissions?.username || ""];
+                const userVote = getUserVote(cdaData.votes, permissions?.token, permissions?.username);
 
                 return (
-                  <div className="space-y-6">
-                    <div className="flex items-center justify-between gap-3 flex-wrap bg-[#0a0a0f] p-3.5 rounded-2xl border border-slate-800">
+                  <>
+                    <div className="p-5 sm:p-6 space-y-6 overflow-y-auto flex-1">
+                      <div className="flex items-center justify-between gap-3 flex-wrap bg-[#0a0a0f] p-3.5 rounded-2xl border border-slate-800">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Stato CDA:</span>
                         {cdaStatus === "PENDING_RENDER" && (
@@ -2006,7 +2482,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
                         {cdaStatus === "TIE_PENDING" && (
                           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/20 text-purple-300 text-xs font-extrabold border border-purple-500/40">
-                            <AlertTriangle size={13} className="text-purple-400" /> Parità Voti (Decisione Vice Pres. +)
+                            <AlertTriangle size={13} className="text-purple-400" /> Parità Voti (Decisione Proprietari)
                           </span>
                         )}
                         {cdaStatus === "APPROVED" && (
@@ -2143,9 +2619,35 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         </div>
 
                         {userVote && (
-                          <div className="bg-indigo-950/40 border border-indigo-500/30 p-3 rounded-xl text-xs flex items-center justify-between text-indigo-200">
-                            <span>Il tuo voto registrato: <strong className="text-white uppercase">{userVote.decision}</strong></span>
-                            <span className="text-[10px] text-indigo-400">{new Date(userVote.timestamp).toLocaleString("it-IT")}</span>
+                          <div className="bg-indigo-950/60 border border-indigo-500/40 p-4 rounded-2xl space-y-2 text-left shadow-lg">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="inline-flex items-center gap-1.5 text-xs font-black text-indigo-300 uppercase tracking-wider">
+                                <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                                Hai già votato per questa candidatura
+                              </span>
+                              <span className="text-[10px] text-indigo-400 font-mono">
+                                {new Date(userVote.timestamp).toLocaleString("it-IT")}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-200 flex items-center gap-2 flex-wrap">
+                              <span>Il tuo voto registrato è:</span>
+                              <span className="px-2.5 py-0.5 rounded-md font-black text-xs uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                {userVote.decision}
+                              </span>
+                              {userVote.chosenRole && (
+                                <span className="text-teal-300 text-xs font-bold">
+                                  (Grado: {userVote.chosenRole})
+                                </span>
+                              )}
+                            </div>
+                            {userVote.reason && (
+                              <p className="text-[11px] text-slate-300 italic pt-1 border-t border-indigo-500/20">
+                                &ldquo;{userVote.reason}&rdquo;
+                              </p>
+                            )}
+                            <div className="pt-1 text-[11px] text-indigo-200/90 font-medium">
+                              💡 <strong>Vuoi cambiare il tuo voto?</strong> Puoi modificare la tua scelta in qualsiasi momento prima della chiusura della votazione.
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2164,10 +2666,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
                       </div>
                     )}
+                    </div>
 
-                    {/* Action Buttons */}
+                    {/* Action Buttons Sticky Footer */}
                     {permissions && (
-                      <div className="flex items-center justify-end gap-3 flex-wrap pt-3 border-t border-slate-800">
+                      <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end gap-3 flex-wrap shrink-0 bg-[#121217]">
                         {cdaStatus === "PENDING_RENDER" && permissions.canReinderizzare && (
                           <button
                             onClick={() => {
@@ -2180,7 +2683,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                           </button>
                         )}
 
-                        {cdaStatus === "PENDING_RENDER" && (permissions.canDirectApprove ?? permissions.cdaRank >= 3) && (
+                        {(cdaStatus === "PENDING_RENDER" || cdaStatus === "IN_VOTING") && (permissions.canDirectApprove ?? permissions.isMaster) && (
                           <button
                             onClick={() => {
                               setSelectedCand(detailCand);
@@ -2192,7 +2695,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                           </button>
                         )}
 
-                        {cdaStatus === "PENDING_RENDER" && (permissions.canDirectReturn ?? permissions.canDirectReview) && (
+                        {(cdaStatus === "PENDING_RENDER" || cdaStatus === "IN_VOTING") && (permissions.canDirectReturn ?? permissions.isMaster) && (
                           <button
                             onClick={() => {
                               setSelectedCand(detailCand);
@@ -2200,7 +2703,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                             }}
                             className="px-4 py-2.5 bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5"
                           >
-                            <XCircle size={14} /> Rimanda Indietro / Annulla
+                            <XCircle size={14} /> Rimanda Indietro / Rifiuta
                           </button>
                         )}
 
@@ -2210,13 +2713,17 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                               setSelectedCand(detailCand);
                               setModalAction("VOTE");
                             }}
-                            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md shadow-indigo-950/50 border border-indigo-400/30"
+                            className={`px-4 py-2.5 text-white font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md border ${
+                              userVote
+                                ? "bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 border-amber-300/50 shadow-amber-950/40"
+                                : "bg-indigo-600 hover:bg-indigo-500 border-indigo-400/30 shadow-indigo-950/50"
+                            }`}
                           >
-                            <Vote size={14} /> Esprimi Voto CDA
+                            <Vote size={14} /> {userVote ? "Cambia / Modifica Voto CDA" : "Esprimi Voto CDA"}
                           </button>
                         )}
 
-                        {cdaStatus === "IN_VOTING" && permissions.canPreventiveAccept && (
+                        {cdaStatus === "IN_VOTING" && (permissions.canPreventiveAccept ?? permissions.isMaster) && (
                           <button
                             onClick={() => {
                               setSelectedCand(detailCand);
@@ -2228,7 +2735,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                           </button>
                         )}
 
-                        {cdaStatus === "TIE_PENDING" && permissions.canResolveTie && (
+                        {cdaStatus === "TIE_PENDING" && (permissions.canResolveTie ?? permissions.isMaster) && (
                           <button
                             onClick={() => {
                               setSelectedCand(detailCand);
@@ -2241,7 +2748,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
                       </div>
                     )}
-                  </div>
+                  </>
                 );
               })()}
             </motion.div>
@@ -2252,15 +2759,21 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
       {/* DETAIL MODAL PROPOSTA */}
       <AnimatePresence>
         {detailProp && !modalAction && (
-          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4 overflow-y-auto">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setDetailProp(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 cursor-pointer"
+          >
             <motion.div
+              onClick={(e) => e.stopPropagation()}
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-[#121217] border border-amber-500/40 rounded-3xl p-6 sm:p-8 max-w-2xl w-full shadow-2xl space-y-6 my-8 relative overflow-hidden max-h-[90vh] overflow-y-auto"
+              className="bg-[#121217] border border-amber-500/40 rounded-3xl max-w-2xl w-full shadow-2xl relative cursor-default max-h-[88vh] flex flex-col overflow-hidden"
             >
               {/* Header */}
-              <div className="flex items-start justify-between pb-4 border-b border-slate-800 gap-4">
+              <div className="flex items-start justify-between p-5 sm:p-6 pb-4 border-b border-slate-800 gap-4 shrink-0 bg-[#121217]">
                 <div className="flex items-start gap-3">
                   <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
                     <FilePlus size={22} />
@@ -2269,12 +2782,14 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     <div className="flex items-center gap-2 flex-wrap">
                       <span
                         className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
-                          detailProp.type === "PROMOZIONE"
+                          detailProp.type === "REINTEGRO"
+                            ? "bg-teal-500/20 text-teal-300 border border-teal-500/30"
+                            : detailProp.type === "PROMOZIONE"
                             ? "bg-purple-500/20 text-purple-300 border border-purple-500/30"
                             : "bg-blue-500/20 text-blue-300 border border-blue-500/30"
                         }`}
                       >
-                        {detailProp.type === "PROMOZIONE" ? "Promozione EMS" : "Proposta Generica"}
+                        {detailProp.type === "REINTEGRO" ? "Reintegro EMS" : detailProp.type === "PROMOZIONE" ? "Promozione EMS" : "Proposta Generica"}
                       </span>
                       <span className="text-[10px] text-slate-500">
                         Proposta da: <strong className="text-amber-300">{detailProp.proposerName}</strong>
@@ -2282,7 +2797,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                     </div>
                     <h3 className="text-xl font-black text-white mt-1">{detailProp.title}</h3>
                     <p className="text-xs text-slate-500">
-                      Creata il: {new Date(detailProp.createdAt).toLocaleString("it-IT")} • ID: {detailProp.id}
+                      Creata il: {detailProp.submittedAt ? new Date(detailProp.submittedAt).toLocaleString("it-IT") : (detailProp.createdAt ? new Date(detailProp.createdAt).toLocaleString("it-IT") : "-")} • ID: {detailProp.id}
                     </p>
                   </div>
                 </div>
@@ -2299,10 +2814,11 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                 const cdaData = detailProp.cdaData || {};
                 const cdaStatus = cdaData.status || "PENDING_RENDER";
                 const stats = getVoteStats(cdaData.votes);
-                const userVote = cdaData.votes?.[permissions?.token || ""] || cdaData.votes?.[permissions?.username || ""];
+                const userVote = getUserVote(cdaData.votes, permissions?.token, permissions?.username);
 
                 return (
-                  <div className="space-y-6">
+                  <>
+                    <div className="p-5 sm:p-6 space-y-6 overflow-y-auto flex-1">
                     <div className="flex items-center justify-between gap-3 flex-wrap bg-[#0a0a0f] p-3.5 rounded-2xl border border-slate-800">
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-slate-400 font-bold uppercase tracking-wider">Stato CDA:</span>
@@ -2318,7 +2834,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
                         {cdaStatus === "TIE_PENDING" && (
                           <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-purple-500/20 text-purple-300 text-xs font-extrabold border border-purple-500/40">
-                            <AlertTriangle size={13} className="text-purple-400" /> Parità Voti (Decisione Vice Pres. +)
+                            <AlertTriangle size={13} className="text-purple-400" /> Parità Voti (Decisione Proprietari)
                           </span>
                         )}
                         {cdaStatus === "APPROVED" && (
@@ -2360,6 +2876,59 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                             </span>
                           </span>
                         ))}
+                      </div>
+                    )}
+
+                    {/* Reinstatement Details Card */}
+                    {detailProp.type === "REINTEGRO" && detailProp.targetEmployeeName && (
+                      <div className="bg-[#0a0a0f] p-4 rounded-2xl border border-teal-500/30 space-y-3">
+                        <div className="text-xs font-bold text-teal-300 uppercase tracking-wider flex items-center gap-2">
+                          <RotateCcw size={15} /> Proposta Reintegro per: <strong className="text-white">{detailProp.targetEmployeeName}</strong>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                          <div className="bg-[#13131a] p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+                            <span className="text-[10px] text-slate-400 block uppercase font-bold">Ruolo Precedente Ricoperto</span>
+                            {(() => {
+                              const badge = getRoleBadgeStyle(detailProp.targetCurrentRole || "");
+                              return (
+                                <span className={`inline-block px-2.5 py-1 rounded-md text-xs font-bold w-fit ${badge.className}`} style={badge.style}>
+                                  {detailProp.targetCurrentRole || "Non specificato"}
+                                </span>
+                              );
+                            })()}
+                          </div>
+                          <div className="bg-[#13131a] p-3 rounded-xl border border-slate-800 flex flex-col gap-1.5">
+                            <span className="text-[10px] text-teal-300 block uppercase font-bold">Ruoli in Opzione di Votazione</span>
+                            <div className="flex flex-wrap gap-1.5">
+                              {(detailProp.reinstatementVotingRoles || (detailProp.targetProposedRole ? detailProp.targetProposedRole.split("/") : [])).map((r, i) => {
+                                const cleanR = r.trim();
+                                const badge = getRoleBadgeStyle(cleanR);
+                                return (
+                                  <span key={i} className={`inline-block px-2 py-0.5 rounded-md text-[11px] font-bold ${badge.className}`} style={badge.style}>
+                                    {cleanR}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        {(detailProp.finalApprovedRole || (cdaStatus === "APPROVED" && detailProp.targetProposedRole)) && (
+                          <div className="bg-emerald-950/30 border border-emerald-500/40 p-3 rounded-xl flex items-center justify-between text-xs text-emerald-200">
+                            <span className="font-bold flex items-center gap-1.5 uppercase text-[11px]">
+                              <CheckCircle2 size={15} className="text-emerald-400" /> Grado Assegnato al Reintegro:
+                            </span>
+                            {(() => {
+                              const roleName = detailProp.finalApprovedRole || detailProp.targetProposedRole || "";
+                              const badge = getRoleBadgeStyle(roleName);
+                              return (
+                                <span className={`inline-block px-3 py-1 rounded-lg text-xs font-black ${badge.className}`} style={badge.style}>
+                                  {roleName}
+                                </span>
+                              );
+                            })()}
+                          </div>
+                        )}
                       </div>
                     )}
 
@@ -2479,9 +3048,35 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         </div>
 
                         {userVote && (
-                          <div className="bg-indigo-950/40 border border-indigo-500/30 p-3 rounded-xl text-xs flex items-center justify-between text-indigo-200">
-                            <span>Il tuo voto registrato: <strong className="text-white uppercase">{userVote.decision}</strong></span>
-                            <span className="text-[10px] text-indigo-400">{new Date(userVote.timestamp).toLocaleString("it-IT")}</span>
+                          <div className="bg-indigo-950/60 border border-indigo-500/40 p-4 rounded-2xl space-y-2 text-left shadow-lg">
+                            <div className="flex items-center justify-between gap-2 flex-wrap">
+                              <span className="inline-flex items-center gap-1.5 text-xs font-black text-indigo-300 uppercase tracking-wider">
+                                <CheckCircle2 size={15} className="text-emerald-400 shrink-0" />
+                                Hai già votato per questa proposta CDA
+                              </span>
+                              <span className="text-[10px] text-indigo-400 font-mono">
+                                {new Date(userVote.timestamp).toLocaleString("it-IT")}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-200 flex items-center gap-2 flex-wrap">
+                              <span>Il tuo voto registrato è:</span>
+                              <span className="px-2.5 py-0.5 rounded-md font-black text-xs uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
+                                {userVote.decision}
+                              </span>
+                              {userVote.chosenRole && (
+                                <span className="text-teal-300 text-xs font-bold">
+                                  (Grado: {userVote.chosenRole})
+                                </span>
+                              )}
+                            </div>
+                            {userVote.reason && (
+                              <p className="text-[11px] text-slate-300 italic pt-1 border-t border-indigo-500/20">
+                                &ldquo;{userVote.reason}&rdquo;
+                              </p>
+                            )}
+                            <div className="pt-1 text-[11px] text-indigo-200/90 font-medium">
+                              💡 <strong>Vuoi cambiare il tuo voto?</strong> Puoi modificare la tua scelta in qualsiasi momento prima della chiusura della votazione.
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2500,76 +3095,63 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
                       </div>
                     )}
+                    </div>
 
-                    {/* Proposal Action Buttons */}
+                    {/* Proposal Action Buttons Sticky Footer */}
                     {permissions && (
-                      <div className="flex items-center justify-end gap-3 flex-wrap pt-3 border-t border-slate-800">
+                      <div className="p-5 sm:p-6 pt-4 border-t border-slate-800 flex items-center justify-end gap-3 flex-wrap shrink-0 bg-[#121217]">
                         {cdaStatus === "PENDING_RENDER" && permissions.canReinderizzare && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("RENDER");
-                            }}
+                            onClick={() => openProposalActionModal(detailProp, "RENDER")}
                             className="px-4 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-slate-950 font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md border border-amber-300/40"
                           >
                             <Send size={14} /> Reindirizza a Votazione CDA (24h)
                           </button>
                         )}
 
-                        {cdaStatus === "PENDING_RENDER" && (permissions.canDirectApprove ?? permissions.cdaRank >= 3) && (
+                        {(cdaStatus === "PENDING_RENDER" || cdaStatus === "IN_VOTING") && (permissions.canDirectApprove ?? permissions.isMaster) && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("DIRECT_APPROVE");
-                            }}
+                            onClick={() => openProposalActionModal(detailProp, "DIRECT_APPROVE")}
                             className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-sm"
                           >
                             <CheckCircle2 size={14} /> Accetta Direttamente
                           </button>
                         )}
 
-                        {cdaStatus === "PENDING_RENDER" && (permissions.canDirectReturn ?? permissions.canDirectReview) && (
+                        {(cdaStatus === "PENDING_RENDER" || cdaStatus === "IN_VOTING") && (permissions.canDirectReturn ?? permissions.isMaster) && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("DIRECT_RETURN");
-                            }}
+                            onClick={() => openProposalActionModal(detailProp, "DIRECT_RETURN")}
                             className="px-4 py-2.5 bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5"
                           >
-                            <XCircle size={14} /> Respingi Proposta
+                            <XCircle size={14} /> Respingi Proposta / Rifiuta
                           </button>
                         )}
 
                         {cdaStatus === "IN_VOTING" && permissions.canVote && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("VOTE");
-                            }}
-                            className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md shadow-indigo-950/50 border border-indigo-400/30"
+                            onClick={() => openProposalActionModal(detailProp, "VOTE")}
+                            className={`px-4 py-2.5 text-white font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md border ${
+                              userVote
+                                ? "bg-gradient-to-r from-amber-600 to-indigo-600 hover:from-amber-500 hover:to-indigo-500 border-amber-300/50 shadow-amber-950/40"
+                                : "bg-indigo-600 hover:bg-indigo-500 border-indigo-400/30 shadow-indigo-950/50"
+                            }`}
                           >
-                            <Vote size={14} /> Esprimi Voto CDA
+                            <Vote size={14} /> {userVote ? "Cambia / Modifica Voto CDA" : "Esprimi Voto CDA"}
                           </button>
                         )}
 
-                        {cdaStatus === "IN_VOTING" && permissions.canPreventiveAccept && (
+                        {cdaStatus === "IN_VOTING" && (permissions.canPreventiveAccept ?? permissions.isMaster) && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("PREVENTIVE");
-                            }}
+                            onClick={() => openProposalActionModal(detailProp, "PREVENTIVE")}
                             className="px-4 py-2.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 font-extrabold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5"
                           >
                             <Sparkles size={14} /> CHIUDI VOTAZIONE
                           </button>
                         )}
 
-                        {cdaStatus === "TIE_PENDING" && permissions.canResolveTie && (
+                        {cdaStatus === "TIE_PENDING" && (permissions.canResolveTie ?? permissions.isMaster) && (
                           <button
-                            onClick={() => {
-                              setSelectedProp(detailProp);
-                              setModalAction("RESOLVE_TIE");
-                            }}
+                            onClick={() => openProposalActionModal(detailProp, "RESOLVE_TIE")}
                             className="px-4 py-2.5 bg-purple-600 hover:bg-purple-500 text-white font-black text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5 shadow-md shadow-purple-950/50 border border-purple-400/30"
                           >
                             <AlertTriangle size={14} /> Risolvi Parità Voti
@@ -2577,27 +3159,19 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         )}
 
                         {(() => {
-                          const isProposer =
-                            (detailProp.token && activeToken && detailProp.token.trim().toUpperCase() === activeToken.trim().toUpperCase()) ||
-                            (detailProp.proposerName && permissions?.username && detailProp.proposerName.trim().toLowerCase() === permissions.username.trim().toLowerCase());
                           const canWithdraw =
                             cdaStatus !== "IN_VOTING" &&
                             detailProp.status !== "APPROVED" &&
                             detailProp.status !== "REJECTED" &&
                             detailProp.status !== "CANCELLED" &&
                             detailProp.status !== "RETURNED" &&
-                            (permissions?.isMaster || isProposer);
+                            permissions?.isMaster;
 
                           if (!canWithdraw) return null;
 
                           return (
                             <button
-                              onClick={() => {
-                                setSelectedProp(detailProp);
-                                setModalAction("CANCEL");
-                                setActionReason("");
-                                setErrorMsg(null);
-                              }}
+                              onClick={() => openProposalActionModal(detailProp, "CANCEL")}
                               className="px-4 py-2.5 bg-rose-600/20 hover:bg-rose-600/40 text-rose-300 border border-rose-500/30 font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition-all flex items-center gap-1.5"
                             >
                               <RotateCcw size={14} /> Ritira Proposta
@@ -2606,7 +3180,7 @@ export default function CdaPortal({ discordSession, onSessionUpdated }: CdaPorta
                         })()}
                       </div>
                     )}
-                  </div>
+                  </>
                 );
               })()}
             </motion.div>

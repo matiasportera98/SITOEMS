@@ -1,12 +1,11 @@
 {
-  "projectId": "lexical-apogee-0t3g1",
-  "appId": "1:766181458910:web:b61427caf90301907b534f",
-  "apiKey": "AIzaSyCStlnXZvLFdATpavEC0efP1eCmHq_NEBM",
-  "authDomain": "lexical-apogee-0t3g1.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-sitodivotazioner-0cf88ef9-8cdd-45d3-a15b-8452148e6f1d",
-  "storageBucket": "lexical-apogee-0t3g1.firebasestorage.app",
-  "messagingSenderId": "766181458910",
+  "projectId": "gen-lang-client-0176895740",
+  "appId": "1:1018634937062:web:58e11cd0e09edc17a59127",
+  "apiKey": "AIzaSyB1TY9aeAKLcFHYOLk4iyyUNUZCPuQcR5U",
+  "authDomain": "gen-lang-client-0176895740.firebaseapp.com",
+  "storageBucket": "gen-lang-client-0176895740.firebasestorage.app",
+  "messagingSenderId": "1018634937062",
   "measurementId": "",
-  "oAuthClientId": "766181458910-iu5ivri7a7bjb84he3o6dg5nhjiqsil4.apps.googleusercontent.com",
+  "oAuthClientId": "1018634937062-kjimrgdnqe72s4nbot182s8c6ck2ak8q.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }
