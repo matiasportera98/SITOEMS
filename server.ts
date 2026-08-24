@@ -3426,6 +3426,31 @@ app.post("/api/admin/excel-gerarchia/push-to-google-sheet", requireDirettoreGene
     auth.setCredentials({ access_token: googleAccessToken });
     const sheets = google.sheets({ version: "v4", auth });
 
+    // Dynamically resolve existing sheet tab names to prevent range parse errors
+    let targetSheetTitle = sheetName;
+    try {
+      const sheetMeta = await sheets.spreadsheets.get({
+        spreadsheetId,
+        fields: "sheets.properties.title",
+      });
+      const existingTitles = (sheetMeta.data.sheets || [])
+        .map((s) => s.properties?.title)
+        .filter(Boolean) as string[];
+
+      if (existingTitles.length > 0) {
+        if (!existingTitles.includes(targetSheetTitle)) {
+          const matchCase = existingTitles.find(
+            (t) => t.toLowerCase().trim() === targetSheetTitle.toLowerCase().trim()
+          );
+          targetSheetTitle = matchCase || existingTitles[0];
+        }
+      }
+    } catch (metaErr: any) {
+      console.warn("Avviso lettura metadati Google Sheet (verrà usato nome predefinito):", metaErr?.message || metaErr);
+    }
+
+    const safeSheetRangeName = `'${targetSheetTitle.replace(/'/g, "''")}'`;
+
     const entries = buildAndSyncExcelGerarchia();
 
     // Prepare standard headers + entries formatted matching the Google Sheet columns
@@ -3452,11 +3477,11 @@ app.post("/api/admin/excel-gerarchia/push-to-google-sheet", requireDirettoreGene
       ]),
     ];
 
-    // Clear range first up to 100 rows to ensure clean overwrite
+    // Clear range first to ensure clean overwrite
     try {
       await sheets.spreadsheets.values.clear({
         spreadsheetId,
-        range: `${sheetName}!A1:G150`,
+        range: `${safeSheetRangeName}!A1:G150`,
       });
     } catch (clearErr) {
       console.warn("Avviso pulizia range precedente:", clearErr);
@@ -3465,7 +3490,7 @@ app.post("/api/admin/excel-gerarchia/push-to-google-sheet", requireDirettoreGene
     // Write updated values
     const result = await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${sheetName}!A1:G${values.length}`,
+      range: `${safeSheetRangeName}!A1:G${values.length}`,
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values,
