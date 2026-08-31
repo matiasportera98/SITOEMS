@@ -842,23 +842,21 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
-    if (existing) {
-      // Preserve custom modifications (e.g. customized CDA role, username, discord tag)
-      return;
-    }
-
     const session: DiscordSession = {
       token: owner.token,
-      username: owner.name,
+      username: existing?.username || owner.name,
       roleName: owner.roleName,
       gradeName: owner.roleName,
       isAllowed: true,
-      discordTag: owner.discordTag,
-      cdaRoleName: owner.cdaRoleName,
-      hasCdaAccess: Boolean(owner.hasCdaAccess || owner.cdaRoleName),
-      hideFromHierarchy: false,
-      verifiedAt: new Date().toISOString(),
+      discordTag: owner.discordTag || existing?.discordTag,
+      cdaRoleName: existing?.cdaRoleName || owner.cdaRoleName,
+      hasCdaAccess: Boolean(existing?.hasCdaAccess || existing?.cdaRoleName || owner.hasCdaAccess || owner.cdaRoleName),
+      hideFromHierarchy: existing?.hideFromHierarchy || false,
+      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
     };
+    if (!session.cdaRoleName) {
+      delete (session as any).cdaRoleName;
+    }
     REGISTERED_DISCORD_USERS.set(tokenKey, session);
     saveTokenFirestore(session);
   });
@@ -875,23 +873,21 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
-    if (existing) {
-      // Preserve custom modifications (such as removing CDA role or editing credentials)
-      return;
-    }
-
     const session: DiscordSession = {
       token: member.token,
-      username: member.name,
+      username: existing?.username || member.name,
       roleName: member.roleName,
       gradeName: member.roleName,
       cdaRoleName: member.cdaRoleName,
       hasCdaAccess: Boolean(member.hasCdaAccess || member.cdaRoleName),
-      discordTag: member.discordTag,
-      hideFromHierarchy: false,
+      discordTag: member.discordTag || existing?.discordTag,
+      hideFromHierarchy: existing?.hideFromHierarchy || false,
       isAllowed: true,
-      verifiedAt: new Date().toISOString(),
+      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
     };
+    if (!member.cdaRoleName) {
+      delete (session as any).cdaRoleName;
+    }
     REGISTERED_DISCORD_USERS.set(tokenKey, session);
     saveTokenFirestore(session);
   });
@@ -5769,14 +5765,16 @@ app.get("/api/admin/export/employee-tokens", async (req, res) => {
         return (a.username || "").localeCompare(b.username || "");
       });
 
-    // Exactly 3 requested columns: Nome e Cognome, Grado, Token
-    const header = ["Nome e Cognome", "Grado", "Token"];
+    // 5 requested columns: Nome e Cognome, Grado, Ruolo CDA, Tag Discord, Token
+    const header = ["Nome e Cognome", "Grado", "Ruolo CDA", "Tag Discord", "Token"];
 
     const rows = tokensList.map((emp) => {
       const fullName = sanitizeForCsv(emp.username || "");
       const gradeName = sanitizeForCsv(emp.roleName || "");
+      const cdaRole = sanitizeForCsv(emp.cdaRoleName && emp.cdaRoleName !== "DEFAULT" ? emp.cdaRoleName : "Nessuno");
+      const discordTag = sanitizeForCsv(emp.discordTag || "");
       const tokenValue = sanitizeForCsv(emp.token || "");
-      return [fullName, gradeName, tokenValue]
+      return [fullName, gradeName, cdaRole, discordTag, tokenValue]
         .map((cell) => `"${(cell || "").replace(/"/g, '""')}"`)
         .join(";");
     });

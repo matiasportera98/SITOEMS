@@ -3793,7 +3793,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                       <button
                         onClick={exportEmployeeTokensExcel}
                         className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-lg border border-emerald-500/40 shadow-md flex items-center gap-1.5 cursor-pointer transition-all active:scale-95"
-                        title="Scarica in un file Excel tutti i token dei ragazzi (Nome e Cognome, Grado e Token)"
+                        title="Scarica in un file Excel tutti i token dei ragazzi (Nome e Cognome, Grado, Ruolo CDA, Tag Discord e Token)"
                       >
                         <FileSpreadsheet size={15} />
                         <span>Esporta Excel Token (Master Key)</span>

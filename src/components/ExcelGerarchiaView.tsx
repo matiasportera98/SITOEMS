@@ -1508,17 +1508,6 @@ export default function ExcelGerarchiaView({
 
           {/* Primary Quick Actions */}
           <div className="flex flex-wrap items-center gap-3 shrink-0">
-            <a
-              href={GOOGLE_SHEET_GERARCHIA_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="h-10 px-4 bg-white/5 hover:bg-white/10 border border-white/15 text-slate-200 text-xs font-bold rounded-xl flex items-center gap-2 transition-all shadow-sm hover:text-white cursor-pointer"
-              title="Apri il foglio Google Drive in una nuova scheda"
-            >
-              <ExternalLink size={14} className="text-emerald-400" />
-              <span>Apri Google Sheet</span>
-            </a>
-
             <button
               type="button"
               onClick={handleOpenAddModal}

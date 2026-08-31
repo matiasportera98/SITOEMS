@@ -134,19 +134,6 @@ export default function ExcelGerarchiaPortal({
             <ArrowLeft size={15} />
             <span>Torna alla Home</span>
           </button>
-
-          <div className="flex items-center gap-2">
-            <a
-              href={GOOGLE_SHEET_GERARCHIA_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-500/30 text-emerald-300 hover:text-emerald-200 text-xs font-bold transition-all shadow-sm group"
-            >
-              <FileSpreadsheet size={14} className="text-emerald-400 group-hover:scale-110 transition-transform" />
-              <span>Apri Google Sheet Ufficiale</span>
-              <ExternalLink size={12} className="opacity-70" />
-            </a>
-          </div>
         </div>
 
         {/* Header Title Banner */}
