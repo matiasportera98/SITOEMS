@@ -216,12 +216,12 @@ function getRoleStyle(roleName: string): RoleStyle {
 
   if (name.includes("volontario") || name.includes("volontaria")) {
     return {
-      badgeBg: "bg-[#c2410c]/25 text-[#ff7849] border-[#ea580c]/50 font-bold",
-      text: "text-[#ff7849]",
-      border: "border-[#ea580c]/50",
-      avatarBg: "bg-orange-950/60 border-[#ea580c]/50",
-      avatarText: "text-[#ff7849]",
-      iconColor: "text-[#ff7849]",
+      badgeBg: "bg-gradient-to-r from-[#a7a7a8]/20 via-[#d09a9a]/20 to-[#f78c8c]/25 text-[#f78c8c] border-[#f78c8c]/50 font-bold shadow-xs shadow-[#f78c8c]/20",
+      text: "bg-gradient-to-r from-[#a7a7a8] to-[#f78c8c] bg-clip-text text-transparent font-bold",
+      border: "border-[#f78c8c]/40 hover:border-[#f78c8c]/70",
+      avatarBg: "bg-slate-900 border-[#f78c8c]/50",
+      avatarText: "bg-gradient-to-r from-[#a7a7a8] to-[#f78c8c] bg-clip-text text-transparent font-black",
+      iconColor: "text-[#f78c8c]",
       symbol: "star",
     };
   }
@@ -450,6 +450,8 @@ export default function EmsHierarchy({ isAdmin = false, adminToken }: EmsHierarc
         return <Star className="w-5 h-5 text-purple-400" />;
       case "FUNZIONARI":
         return <Award className="w-5 h-5 text-orange-400" />;
+      case "VOLONTARI":
+        return <Users className="w-5 h-5 text-[#f78c8c]" />;
       default:
         return <Users className="w-5 h-5 text-slate-400" />;
     }
@@ -471,13 +473,17 @@ export default function EmsHierarchy({ isAdmin = false, adminToken }: EmsHierarc
 
   return (
     <div className="max-w-7xl mx-auto px-2 sm:px-6 py-4 sm:py-8 space-y-6 sm:space-y-8 w-full max-w-full overflow-x-hidden">
-      {/* Hidden SVG Gradient Definitions for Vice Proprietario */}
+      {/* Hidden SVG Gradient Definitions for Vice Proprietario and Volontario */}
       <svg width="0" height="0" className="absolute w-0 h-0 pointer-events-none shrink-0" aria-hidden="true">
         <defs>
           <linearGradient id="viceProprietarioGradient" x1="0%" y1="0%" x2="100%" y2="100%">
             <stop offset="0%" stopColor="#8fb3f5" />
             <stop offset="50%" stopColor="#b89bf3" />
             <stop offset="100%" stopColor="#f28fbe" />
+          </linearGradient>
+          <linearGradient id="volontarioGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#a7a7a8" />
+            <stop offset="100%" stopColor="#f78c8c" />
           </linearGradient>
         </defs>
       </svg>

@@ -384,6 +384,7 @@ interface DiscordSession {
   durationMs?: number;
   activatedAt?: string;
   candidateId?: string;
+  hideFromHierarchy?: boolean;
 }
 
 const DISCORD_USERS_FILE = path.join(process.cwd(), "discord_registered_users.json");
@@ -649,6 +650,7 @@ const AUTHORIZED_ROLE_GRADES: Record<string, number> = {
   "V. Responsabile Del Presidio": 3,
   "Primario di Reparto": 2,
   "V. Primario di Reparto": 1,
+  "Volontario": 0.5,
 };
 
 const ROLE_GRADE_MAP_SERVER: Record<string, number> = {
@@ -692,6 +694,8 @@ const ROLE_GRADE_MAP_SERVER: Record<string, number> = {
   "soccorritore": 3,
   "tirocinante": 2,
   "allievo": 2,
+  "volontario": 0.5,
+  "volontaria": 0.5,
   "dipendente": 1,
 };
 
@@ -730,6 +734,7 @@ function getRoleGrade(roleName: string): number {
   if (clean.includes("paramedico")) return 4;
   if (clean.includes("soccorritore")) return 3;
   if (clean.includes("tirocinante") || clean.includes("allievo")) return 2;
+  if (clean.includes("volontario") || clean.includes("volontaria")) return 0.5;
   if (clean.includes("dipendente")) return 1;
 
   return 0;
@@ -816,11 +821,19 @@ function getCallerGradeAndRole(req: express.Request): {
 // Ensure exact official tokens for all registered members (3 owners, 22 official staff members, and master token)
 function ensureTokensForCandidates() {
   // Always ensure Master Secret Token is present
-  REGISTERED_DISCORD_USERS.set(MASTER_SECRET_TOKEN.toUpperCase(), MASTER_SESSION);
+  const masterKey = MASTER_SECRET_TOKEN.toUpperCase();
+  const existingMaster = REGISTERED_DISCORD_USERS.get(masterKey);
+  if (!existingMaster) {
+    REGISTERED_DISCORD_USERS.set(masterKey, { ...MASTER_SESSION });
+  } else {
+    existingMaster.isMaster = true;
+  }
+  ALLOWED_OFFICIAL_TOKEN_KEYS.add(masterKey);
 
   // Ensure 3 Owners are present with official tokens (unless explicitly revoked or purged)
   OFFICIAL_OWNERS_SEED.forEach((owner) => {
     const tokenKey = owner.token.toUpperCase();
+    ALLOWED_OFFICIAL_TOKEN_KEYS.add(tokenKey);
     const isRevoked = REVOKED_TOKENS.has(tokenKey);
     const isPurged = PURGED_TOKENS.has(tokenKey);
     if (isRevoked || isPurged) {
@@ -829,22 +842,31 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
+    if (existing) {
+      // Preserve custom modifications (e.g. customized CDA role, username, discord tag)
+      return;
+    }
+
     const session: DiscordSession = {
       token: owner.token,
-      username: existing?.username || owner.name,
-      roleName: existing?.roleName || owner.roleName,
-      gradeName: existing?.gradeName || owner.roleName,
+      username: owner.name,
+      roleName: owner.roleName,
+      gradeName: owner.roleName,
       isAllowed: true,
-      discordTag: existing?.discordTag || owner.discordTag,
-      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
+      discordTag: owner.discordTag,
+      cdaRoleName: owner.cdaRoleName,
+      hasCdaAccess: Boolean(owner.hasCdaAccess || owner.cdaRoleName),
+      hideFromHierarchy: false,
+      verifiedAt: new Date().toISOString(),
     };
     REGISTERED_DISCORD_USERS.set(tokenKey, session);
     saveTokenFirestore(session);
   });
 
-  // Ensure 22 Official Members from Image are present with exact tokens (unless explicitly revoked or purged)
+  // Ensure Official Members from Image are present with exact tokens (unless explicitly revoked or purged)
   OFFICIAL_IMAGE_MEMBERS_SEED.forEach((member) => {
     const tokenKey = member.token.toUpperCase();
+    ALLOWED_OFFICIAL_TOKEN_KEYS.add(tokenKey);
     const isRevoked = REVOKED_TOKENS.has(tokenKey);
     const isPurged = PURGED_TOKENS.has(tokenKey);
     if (isRevoked || isPurged) {
@@ -853,16 +875,22 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
+    if (existing) {
+      // Preserve custom modifications (such as removing CDA role or editing credentials)
+      return;
+    }
+
     const session: DiscordSession = {
       token: member.token,
-      username: existing?.username || member.name,
-      roleName: existing?.roleName || member.roleName,
-      gradeName: existing?.gradeName || member.roleName,
-      cdaRoleName: existing?.cdaRoleName !== undefined ? existing.cdaRoleName : member.cdaRoleName,
-      hasCdaAccess: existing?.hasCdaAccess !== undefined ? existing.hasCdaAccess : !!member.hasCdaAccess,
-      discordTag: existing?.discordTag || member.discordTag,
+      username: member.name,
+      roleName: member.roleName,
+      gradeName: member.roleName,
+      cdaRoleName: member.cdaRoleName,
+      hasCdaAccess: Boolean(member.hasCdaAccess || member.cdaRoleName),
+      discordTag: member.discordTag,
+      hideFromHierarchy: false,
       isAllowed: true,
-      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
+      verifiedAt: new Date().toISOString(),
     };
     REGISTERED_DISCORD_USERS.set(tokenKey, session);
     saveTokenFirestore(session);
@@ -891,13 +919,13 @@ function isRoleAllowed(roleName: string): boolean {
   );
 }
 
-// Check if caller is high-level owner (Master token, Proprietario, or Vice Proprietario with grade >= 99)
-function isHighLevelOwnerCaller(caller: { isMaster: boolean; roleName: string; grade: number }): boolean {
+// Check if caller is high-level owner (Master token, Admin password, Proprietario, or Vice Proprietario with grade >= 99)
+function isHighLevelOwnerCaller(caller: { isMaster?: boolean; roleName?: string; grade?: number; isAdminPassword?: boolean }): boolean {
   if (!caller) return false;
-  if (caller.isMaster) return true;
-  if (caller.grade >= 99) return true;
+  if (caller.isMaster || caller.isAdminPassword) return true;
+  if (typeof caller.grade === "number" && caller.grade >= 10) return true;
   const clean = (caller.roleName || "").trim().toLowerCase();
-  if (clean.includes("proprietario")) return true;
+  if (clean.includes("proprietario") || clean.includes("admin") || clean.includes("direttore generale") || clean.includes("master")) return true;
   return false;
 }
 
@@ -1569,10 +1597,12 @@ app.post("/api/admin/employee-tokens", requireAdmin, async (req, res) => {
       return res.status(403).json({ error: "Accesso riservato: Solo il personale con grado da V. Direttore in su può generare nuovi token dipendenti." });
     }
 
-    const { fullName, roleName, customToken, cdaRoleName, hasCdaAccess } = req.body;
+    const { fullName, roleName, customToken, cdaRoleName, hasCdaAccess, discordTag, hideFromHierarchy } = req.body;
     const cleanName = sanitizeString(fullName, 100);
     const cleanRole = sanitizeString(roleName, 100);
     const cleanCdaRole = cdaRoleName ? sanitizeString(cdaRoleName, 100) : undefined;
+    const cleanDiscordTag = discordTag ? sanitizeString(discordTag, 64) : undefined;
+    const cleanHideHierarchy = Boolean(hideFromHierarchy);
 
     if (!cleanName || cleanName.length < 2) {
       return res.status(400).json({ error: "Nome e Cognome dipendente obbligatorio (minimo 2 caratteri)." });
@@ -1607,7 +1637,7 @@ app.post("/api/admin/employee-tokens", requireAdmin, async (req, res) => {
     const allowed = isRoleAllowed(cleanRole);
     if (!allowed && !cleanCdaRole) {
       return res.status(400).json({
-        error: `Il grado '${cleanRole}' non è autorizzato per la votazione. Seleziona un grado da Vice Primario di Reparto a Proprietario.`,
+        error: `Il grado '${cleanRole}' non è autorizzato. Seleziona un grado valido da Volontario a Proprietario.`,
       });
     }
 
@@ -1628,6 +1658,8 @@ app.post("/api/admin/employee-tokens", requireAdmin, async (req, res) => {
       verifiedAt: new Date().toISOString(),
       cdaRoleName: cleanCdaRole,
       hasCdaAccess: typeof hasCdaAccess === "boolean" ? hasCdaAccess : (cleanCdaRole ? true : undefined),
+      discordTag: cleanDiscordTag,
+      hideFromHierarchy: cleanHideHierarchy,
     };
 
     // Un-revoke user/token if previously revoked
@@ -1693,10 +1725,12 @@ app.post("/api/admin/test-tokens", requireAdmin, async (req, res) => {
       });
     }
 
-    const { fullName, roleName, cdaRoleName, customToken, durationValue, durationUnit, hasCdaAccess } = req.body;
+    const { fullName, roleName, cdaRoleName, customToken, durationValue, durationUnit, hasCdaAccess, discordTag, hideFromHierarchy } = req.body;
     const cleanName = sanitizeString(fullName, 100);
     const cleanRole = sanitizeString(roleName, 100);
     const cleanCdaRole = cdaRoleName ? sanitizeString(cdaRoleName, 100) : undefined;
+    const cleanDiscordTag = discordTag ? sanitizeString(discordTag, 64) : undefined;
+    const cleanHideHierarchy = Boolean(hideFromHierarchy);
 
     if (!cleanName || cleanName.length < 2) {
       return res.status(400).json({ error: "Nome dipendente per il Token TEST obbligatorio (minimo 2 caratteri)." });
@@ -1742,6 +1776,8 @@ app.post("/api/admin/test-tokens", requireAdmin, async (req, res) => {
       isTestToken: true,
       expiresAt,
       durationMs: addMs > 0 ? addMs : undefined,
+      discordTag: cleanDiscordTag,
+      hideFromHierarchy: cleanHideHierarchy,
     };
 
     // Un-revoke user/token if previously revoked
@@ -1803,20 +1839,27 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
     }
 
     const tokenToUpdate = sanitizeString(req.params.token, 50).toUpperCase();
-    if (tokenToUpdate === MASTER_SECRET_TOKEN.toUpperCase()) {
-      return res.status(403).json({ error: "Il Token Master permanente non può essere modificato." });
-    }
+    const isMaster = tokenToUpdate === MASTER_SECRET_TOKEN.toUpperCase();
 
-    const existingUser = REGISTERED_DISCORD_USERS.get(tokenToUpdate);
+    let existingUser = REGISTERED_DISCORD_USERS.get(tokenToUpdate);
+    if (!existingUser && isMaster) {
+      existingUser = { ...MASTER_SESSION };
+    }
     if (!existingUser) {
       return res.status(404).json({ error: "Token non trovato." });
     }
 
-    const { fullName, roleName, cdaRoleName, hasCdaAccess, newToken } = req.body;
+    const { fullName, roleName, cdaRoleName, hasCdaAccess, newToken, discordTag, hideFromHierarchy } = req.body;
     const cleanName = fullName ? sanitizeString(fullName, 100) : existingUser.username;
     const cleanRole = roleName ? sanitizeString(roleName, 100) : existingUser.roleName;
-    const cleanCdaRole = cdaRoleName !== undefined ? (cdaRoleName ? sanitizeString(cdaRoleName, 100) : undefined) : existingUser.cdaRoleName;
-    const cleanNewToken = newToken ? sanitizeString(newToken, 50).toUpperCase() : tokenToUpdate;
+    const cleanCdaRole = cdaRoleName !== undefined 
+      ? (cdaRoleName && cdaRoleName.trim() !== "" && cdaRoleName !== "DEFAULT" ? sanitizeString(cdaRoleName, 100) : undefined)
+      : existingUser.cdaRoleName;
+    const cleanDiscordTag = discordTag !== undefined 
+      ? (discordTag && discordTag.trim() !== "" ? sanitizeString(discordTag, 64) : undefined) 
+      : existingUser.discordTag;
+    const cleanHideHierarchy = hideFromHierarchy !== undefined ? Boolean(hideFromHierarchy) : Boolean(existingUser.hideFromHierarchy);
+    const cleanNewToken = isMaster ? MASTER_SECRET_TOKEN.toUpperCase() : (newToken ? sanitizeString(newToken, 50).toUpperCase() : tokenToUpdate);
 
     // Validate new token if user changed it
     if (cleanNewToken !== tokenToUpdate) {
@@ -1832,8 +1875,14 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
       }
     }
 
-    // Security Check: Only High-Level Owner Callers (Vice Proprietario, Proprietario, Master) can assign restricted roles (Proprietario, Vice Proprietario, Consigliere Finale CDA)
-    if ((isRestrictedRole(cleanRole) || (cleanCdaRole && isRestrictedRole(cleanCdaRole))) && !isHighLevelOwnerCaller(caller)) {
+    // Security Check: Only verify when promoting a previously non-restricted user to a restricted role (Proprietario, Vice Proprietario)
+    const isTargetRestricted = isRestrictedRole(cleanRole);
+    const wasAlreadyRestricted = isRestrictedRole(existingUser.roleName);
+    const isNewRestrictedRole = isTargetRestricted && !wasAlreadyRestricted;
+
+    const isNewConsigliereFinale = cleanCdaRole && cleanCdaRole.toLowerCase().includes("consigliere finale") && !(existingUser.cdaRoleName && existingUser.cdaRoleName.toLowerCase().includes("consigliere finale"));
+
+    if ((isNewRestrictedRole || isNewConsigliereFinale) && !isHighLevelOwnerCaller(caller)) {
       addAccessLog(
         req,
         caller.username,
@@ -1844,9 +1893,13 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
         `Tentativo da parte di ${caller.username} (${caller.roleName}) di assegnare il ruolo riservato (${cleanRole} / ${cleanCdaRole || "Nessuno"}) bloccato per mancanza di privilegi.`
       );
       return res.status(403).json({
-        error: "Permesso negato: Solo la Proprietà e Vice Proprietà (Token Proprietario / Vice Proprietario / Master) possono assegnare i ruoli di Proprietario, Vice Proprietario e Consigliere Finale CDA.",
+        error: "Permesso negato: Solo la Proprietà e Vice Proprietà possono promuovere a ruoli di Proprietà o Consigliere Finale CDA.",
       });
     }
+
+    const cleanHasCda = typeof hasCdaAccess === "boolean"
+      ? hasCdaAccess
+      : Boolean(cleanCdaRole);
 
     const updatedSession: DiscordSession = {
       ...existingUser,
@@ -1854,13 +1907,18 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
       roleName: cleanRole,
       gradeName: cleanRole,
       cdaRoleName: cleanCdaRole,
-      hasCdaAccess: typeof hasCdaAccess === "boolean" ? hasCdaAccess : (cleanCdaRole ? true : existingUser.hasCdaAccess),
+      hasCdaAccess: cleanHasCda,
+      discordTag: cleanDiscordTag,
+      hideFromHierarchy: cleanHideHierarchy,
       token: cleanNewToken,
+      isMaster: isMaster ? true : existingUser.isMaster,
     };
 
     if (!cleanCdaRole) {
       delete updatedSession.cdaRoleName;
-      delete updatedSession.hasCdaAccess;
+    }
+    if (!cleanDiscordTag) {
+      delete updatedSession.discordTag;
     }
 
     if (cleanNewToken !== tokenToUpdate) {
@@ -1877,9 +1935,13 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
       }
     }
 
+    ALLOWED_OFFICIAL_TOKEN_KEYS.add(cleanNewToken.toUpperCase());
     REGISTERED_DISCORD_USERS.set(cleanNewToken, updatedSession);
     await saveTokenFirestore(updatedSession);
     saveRegisteredDiscordUsers(REGISTERED_DISCORD_USERS);
+
+    // Refresh hierarchy cache
+    buildAutoHierarchyMembers();
 
     addAccessLog(
       req,
@@ -2370,42 +2432,62 @@ function ensureHierarchyLoaded(): HierarchyMember[] {
 function buildAutoHierarchyMembers(): HierarchyMember[] {
   ensureTokensForCandidates();
   const membersMap = new Map<string, HierarchyMember>();
+  const nowTime = Date.now();
 
-  // 1. Add 3 Owners (Category: PROPRIETARI)
-  OFFICIAL_OWNERS_SEED.forEach((owner) => {
-    const key = `${owner.name.trim().toLowerCase()}_${owner.roleName.trim().toLowerCase()}`;
-    membersMap.set(key, {
-      id: "HIER-OWNER-" + owner.name.replace(/\s+/g, "").toLowerCase(),
-      name: owner.name.trim(),
-      roleName: owner.roleName.trim(),
-      categoryKey: "PROPRIETARI",
-      badge: "Proprietario / Fondatore EMS",
-      discordTag: owner.discordTag || `@${owner.name.trim().toLowerCase().replace(/\s+/g, "_")}`,
-      updatedAt: new Date().toISOString(),
-    });
-  });
+  // Dynamically build hierarchy from active registered employee tokens
+  for (const session of REGISTERED_DISCORD_USERS.values()) {
+    if (!session || !session.token) continue;
+    const upperToken = session.token.toUpperCase();
 
-  // 2. Add 22 Image Members
-  OFFICIAL_IMAGE_MEMBERS_SEED.forEach((member) => {
-    const key = `${member.name.trim().toLowerCase()}_${member.roleName.trim().toLowerCase()}`;
-    const categoryKey = getCategoryForRole(member.roleName);
-    let badge = member.cdaRoleName ? member.cdaRoleName : "Membro Verificato EMS";
-    membersMap.set(key, {
-      id: "HIER-MEMBER-" + member.name.replace(/\s+/g, "").toLowerCase(),
-      name: member.name.trim(),
-      roleName: member.roleName.trim(),
+    // Exclude master key and master representation
+    if (session.isMaster || upperToken === MASTER_SECRET_TOKEN.toUpperCase() || upperToken === "EMS-2410PROP") {
+      continue;
+    }
+    const cleanUser = (session.username || "").toLowerCase();
+    if (cleanUser.includes("master") || cleanUser.includes("2410")) {
+      continue;
+    }
+
+    // Exclude revoked, purged, or disallowed tokens
+    if (REVOKED_TOKENS.has(upperToken) || PURGED_TOKENS.has(upperToken) || session.isAllowed === false) {
+      continue;
+    }
+
+    // Exclude expired test tokens
+    if (session.expiresAt && new Date(session.expiresAt).getTime() <= nowTime) {
+      continue;
+    }
+
+    // Exclude tokens explicitly selected to be hidden from hierarchy
+    if (session.hideFromHierarchy === true) {
+      continue;
+    }
+
+    const categoryKey = getCategoryForRole(session.roleName);
+    let badge: string | undefined = undefined;
+    if (session.cdaRoleName && session.cdaRoleName.trim() !== "" && session.cdaRoleName !== "DEFAULT") {
+      badge = session.cdaRoleName.trim();
+    }
+
+    const discTag = session.discordTag || (session.username ? `@${session.username.trim().toLowerCase().replace(/\s+/g, "_")}` : undefined);
+
+    const memKey = `${session.username.trim().toLowerCase()}_${session.roleName.trim().toLowerCase()}`;
+    const memberEntry: HierarchyMember = {
+      id: "HIER-TOKEN-" + upperToken,
+      name: session.username.trim(),
+      roleName: session.roleName.trim(),
       categoryKey,
       badge,
-      discordTag: member.discordTag || `@${member.name.trim().toLowerCase().replace(/\s+/g, "_")}`,
-      updatedAt: new Date().toISOString(),
-    });
-  });
+      discordTag: discTag,
+      updatedAt: session.verifiedAt || new Date().toISOString(),
+    };
+    if (!memberEntry.badge) {
+      delete (memberEntry as any).badge;
+    }
+    membersMap.set(memKey, memberEntry);
+  }
 
-  // Filter out any master key representations (master key must NOT appear in hierarchy)
-  const list = Array.from(membersMap.values()).filter(m => {
-    const cleanName = m.name.toLowerCase();
-    return !cleanName.includes("master") && !cleanName.includes("2410");
-  });
+  const list = Array.from(membersMap.values());
 
   const catOrder: Record<HierarchyCategoryKey, number> = {
     PROPRIETARI: 1,
@@ -2413,6 +2495,7 @@ function buildAutoHierarchyMembers(): HierarchyMember[] {
     DIRIGENZA_SANITARIA: 3,
     SUPERVISIONE: 4,
     FUNZIONARI: 5,
+    VOLONTARI: 6,
   };
 
   list.sort((a, b) => {
@@ -2434,13 +2517,13 @@ function buildAutoHierarchyMembers(): HierarchyMember[] {
 // Public endpoint to get full hierarchy (Accessible to everyone)
 app.get("/api/hierarchy", (req, res) => {
   try {
-    ensureHierarchyLoaded();
+    const freshMembers = buildAutoHierarchyMembers();
 
     res.json({
       success: true,
       categories: HIERARCHY_CATEGORIES,
-      members: HIERARCHY_MEMBERS,
-      totalCount: HIERARCHY_MEMBERS.length,
+      members: freshMembers,
+      totalCount: freshMembers.length,
     });
   } catch (error) {
     console.error("Error serving hierarchy:", error);

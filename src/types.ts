@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 
 export enum RoleId {
+  VOLONTARIO = "volontario",
   V_PRIMARIO = "v_primario",
   PRIMARIO = "primario",
   V_RESPONSABILE_PRESIDIO = "v_responsabile_presidio",
@@ -54,6 +55,13 @@ export interface RoleConfig {
 }
 
 export const ROLE_CONFIGS: Record<RoleId, RoleConfig> = {
+  [RoleId.VOLONTARIO]: {
+    id: RoleId.VOLONTARIO,
+    name: "Volontario",
+    color: "gradient-volontario",
+    symbol: "star",
+    grade: 0,
+  },
   [RoleId.V_PRIMARIO]: {
     id: RoleId.V_PRIMARIO,
     name: "V. Primario di Reparto",
@@ -166,6 +174,7 @@ export interface DiscordUserSession {
   activatedAt?: string;
   isExpired?: boolean;
   candidateId?: string;
+  hideFromHierarchy?: boolean;
 }
 
 const ROLE_GRADE_MAP: Record<string, number> = {
@@ -291,6 +300,7 @@ export const ALLOWED_DISCORD_ROLES = [
   "V. Responsabile Del Presidio",
   "Primario di Reparto",
   "V. Primario di Reparto",
+  "Volontario",
   "Consigliere Finale CDA",
   "Presidente CDA",
   "Vice Presidente CDA",
@@ -303,7 +313,8 @@ export type HierarchyCategoryKey =
   | "DIRIGENZA_GENERALE"
   | "DIRIGENZA_SANITARIA"
   | "SUPERVISIONE"
-  | "FUNZIONARI";
+  | "FUNZIONARI"
+  | "VOLONTARI";
 
 export interface HierarchyMember {
   id: string;
@@ -388,10 +399,21 @@ export const HIERARCHY_CATEGORIES: Record<HierarchyCategoryKey, HierarchyCategor
     badgeBg: "bg-orange-500/10 text-orange-300 border-orange-500/30",
     order: 5,
   },
+  VOLONTARI: {
+    key: "VOLONTARI",
+    title: "Volontari",
+    description: "Supporto operativo, soccorso ed assistenza alle attività EMS",
+    rolesIncluded: ["Volontario"],
+    color: "[#f78c8c]",
+    borderColor: "border-[#f78c8c]/30 hover:border-[#f78c8c]/60",
+    bgColor: "bg-slate-900/50 backdrop-blur-md",
+    badgeBg: "bg-gradient-to-r from-[#a7a7a8]/20 to-[#f78c8c]/20 text-[#f78c8c] border-[#f78c8c]/40",
+    order: 6,
+  },
 };
 
 export function getCategoryForRole(roleName: string): HierarchyCategoryKey {
-  if (!roleName) return "FUNZIONARI";
+  if (!roleName) return "VOLONTARI";
   const r = roleName.trim().toLowerCase();
 
   if (r.includes("proprietario")) {
@@ -421,7 +443,13 @@ export function getCategoryForRole(roleName: string): HierarchyCategoryKey {
   ) {
     return "FUNZIONARI";
   }
-  return "FUNZIONARI";
+  if (
+    r.includes("volontario") ||
+    r.includes("volontaria")
+  ) {
+    return "VOLONTARI";
+  }
+  return "VOLONTARI";
 }
 
 export interface OfficialMemberSeed {
@@ -455,28 +483,29 @@ export const OFFICIAL_OWNERS_SEED: OfficialMemberSeed[] = [
 ];
 
 export const OFFICIAL_IMAGE_MEMBERS_SEED: OfficialMemberSeed[] = [
+  { name: "Matias Corleone", roleName: "Vice Proprietario", token: "EMS-MCA496", discordTag: "@matias_corleone", cdaRoleName: "Vice Presidente CDA", hasCdaAccess: true },
   { name: "Theo Smith", roleName: "Direttore Generale", token: "EMS-TSD286", discordTag: "@theo_smith", cdaRoleName: "Presidente CDA", hasCdaAccess: true },
   { name: "Filippo Ciro", roleName: "Direttore Sanitario", token: "EMS-FC6767", discordTag: "@filippo_ciro", cdaRoleName: "Membro CDA", hasCdaAccess: true },
   { name: "Luca Brizzante", roleName: "Direttore Sanitario", token: "EMS-LBC6A6", discordTag: "@luca_brizzante", cdaRoleName: "Segretario CDA", hasCdaAccess: true },
-  { name: "Matias Corleone", roleName: "Direttore Sanitario", token: "EMS-MCA496", discordTag: "@matias_corleone", cdaRoleName: "Vice Presidente CDA", hasCdaAccess: true },
   { name: "Ares Migliorini", roleName: "V. Direttore Sanitario", token: "EMS-AM59DB", discordTag: "@ares_migliorini", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Igor Lestrange", roleName: "V. Direttore Sanitario", token: "EMS-ILB5D2", discordTag: "@igor_lestrange", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Dutch Esposito", roleName: "V. Direttore Sanitario", token: "EMS-DEC97C", discordTag: "@dutch_esposito", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Igor Lestrenge", roleName: "V. Direttore Sanitario", token: "EMS-ILB5D2", discordTag: "@igor_lestrenge", cdaRoleName: "Membro CDA", hasCdaAccess: true },
   { name: "Ciccio Losavio", roleName: "Segretario Direzione", token: "EMS-CLA9CC", discordTag: "@ciccio_losavio", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Dutch Esposito", roleName: "Segretario Direzione", token: "EMS-DEC97C", discordTag: "@dutch_esposito", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Diego Trombini", roleName: "Supervisore Generale", token: "EMS-DT0311", discordTag: "@diego_trombini", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Jolyne Kujo", roleName: "Supervisore Generale", token: "EMS-JK58DF", discordTag: "@jolyne_kujo" },
-  { name: "Jonathan Giacomarra", roleName: "Supervisore", token: "EMS-JG211B", discordTag: "@jonathan_giacomarra", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Rocco Ali", roleName: "V. Supervisore", token: "EMS-RAA405", discordTag: "@rocco_ali", cdaRoleName: "Membro CDA", hasCdaAccess: true },
-  { name: "Mimmo Diesel", roleName: "Assistente Supervisore", token: "EMS-MD5D0E", discordTag: "@mimmo_diesel" },
-  { name: "Raffaele Bravi", roleName: "Assistente Supervisore", token: "EMS-RB1237", discordTag: "@raffaele_bravi" },
+  { name: "Jonathan Giacomarra", roleName: "Segretario Direzione", token: "EMS-JG211B", discordTag: "@jonathan_giacomarra", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Giuseppe Politics", roleName: "Supervisore Generale", token: "EMS-GP67SC", discordTag: "@giuseppe_politics", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Diego Trombini", roleName: "Supervisore", token: "EMS-DT0311", discordTag: "@diego_trombini", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Rocco Ali", roleName: "Supervisore", token: "EMS-RAA405", discordTag: "@rocco_ali", cdaRoleName: "Membro CDA", hasCdaAccess: true },
+  { name: "Raffaele Bravi", roleName: "V. Supervisore", token: "EMS-RB1237", discordTag: "@raffaele_bravi" },
+  { name: "Alex De Santis", roleName: "Assistente Supervisore", token: "EMS-ADSY34", discordTag: "@alex_de_santis" },
+  { name: "Giangi Leanza", roleName: "Assistente Supervisore", token: "EMS-GLEA9D", discordTag: "@giangi_leanza" },
+  { name: "Antonio Palermo", roleName: "V. Responsabile Del Presidio", token: "EMS-AP34FW", discordTag: "@antonio_palermo" },
+  { name: "Kevin Panetto", roleName: "V. Responsabile Del Presidio", token: "EMS-KP28RC", discordTag: "@kevin_panetto" },
+  { name: "Mirko Leone", roleName: "V. Responsabile Del Presidio", token: "EMS-ML373T", discordTag: "@mirko_leone" },
+  { name: "Nick Larsson", roleName: "V. Responsabile Del Presidio", token: "EMS-NLDF73", discordTag: "@nick_larsson" },
   { name: "Rick Maltese", roleName: "V. Responsabile Del Presidio", token: "EMS-RM6E9E", discordTag: "@rick_maltese" },
-  { name: "Alex De Santis", roleName: "Primario di Reparto", token: "EMS-ADSY34", discordTag: "@alex_de_santis" },
-  { name: "Kevin Panetto", roleName: "Primario di Reparto", token: "EMS-KP28RC", discordTag: "@kevin_panetto" },
-  { name: "Mirko Leone", roleName: "Primario di Reparto", token: "EMS-ML373T", discordTag: "@mirko_leone" },
-  { name: "Antonio Palermo", roleName: "V. Primario di Reparto", token: "EMS-AP34FW", discordTag: "@antonio_palermo" },
-  { name: "Logan Red", roleName: "V. Primario di Reparto", token: "EMS-LR37DF", discordTag: "@logan_red" },
-  { name: "Nick Larsson", roleName: "V. Primario di Reparto", token: "EMS-NLDF73", discordTag: "@nick_larsson" },
-  { name: "Sofia Leone", roleName: "V. Primario di Reparto", token: "EMS-SL923R", discordTag: "@sofia_leone" },
+  { name: "Yuki Cross", roleName: "V. Responsabile Del Presidio", token: "EMS-YCDB15", discordTag: "@yuki_cross" },
+  { name: "Massimo Arresto", roleName: "V. Primario di Reparto", token: "EMS-MAFFU23", discordTag: "@massimo_arresto" },
+  { name: "Matteo Piscitelli", roleName: "V. Primario di Reparto", token: "EMS-MA264H", discordTag: "@matteo_piscitelli" },
 ];
 
 export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
@@ -484,28 +513,29 @@ export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
   "EMS-ARPROP",
   "EMS-GMPROP",
   "EMS-SRPROP",
+  "EMS-MCA496",
   "EMS-TSD286",
   "EMS-FC6767",
   "EMS-LBC6A6",
-  "EMS-MCA496",
   "EMS-AM59DB",
+  "EMS-DEC97C",
   "EMS-ILB5D2",
   "EMS-CLA9CC",
-  "EMS-DEC97C",
-  "EMS-DT0311",
-  "EMS-JK58DF",
   "EMS-JG211B",
+  "EMS-GP67SC",
+  "EMS-DT0311",
   "EMS-RAA405",
-  "EMS-MD5D0E",
   "EMS-RB1237",
-  "EMS-RM6E9E",
   "EMS-ADSY34",
+  "EMS-GLEA9D",
+  "EMS-AP34FW",
   "EMS-KP28RC",
   "EMS-ML373T",
-  "EMS-AP34FW",
-  "EMS-LR37DF",
   "EMS-NLDF73",
-  "EMS-SL923R",
+  "EMS-RM6E9E",
+  "EMS-YCDB15",
+  "EMS-MAFFU23",
+  "EMS-MA264H",
 ]);
 
 

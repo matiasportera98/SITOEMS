@@ -42,7 +42,7 @@ if (fs.existsSync(configPath)) {
 }
 
 let firestoreDb: any = null;
-let firestoreQuotaExhausted = false;
+let firestoreQuotaExhausted = true;
 let quotaExhaustedResetTimer: NodeJS.Timeout | null = null;
 
 export function isFirestoreQuotaExhausted(): boolean {
@@ -131,40 +131,7 @@ export async function safeFirestoreWrite(writeFn: () => Promise<any>, retries = 
   }
 }
 
-if (firebaseConfig && firebaseConfig.apiKey && firebaseConfig.projectId) {
-  try {
-    const app = getApps().length === 0
-      ? initializeApp({
-          apiKey: firebaseConfig.apiKey,
-          authDomain: firebaseConfig.authDomain,
-          projectId: firebaseConfig.projectId,
-          storageBucket: firebaseConfig.storageBucket,
-          messagingSenderId: firebaseConfig.messagingSenderId,
-          appId: firebaseConfig.appId,
-        })
-      : getApp();
-
-    try {
-      setLogLevel("silent");
-    } catch (_err) {
-      // Ignore
-    }
-
-    const dbId = firebaseConfig.firestoreDatabaseId || "(default)";
-    try {
-      firestoreDb = initializeFirestore(app, {
-        experimentalForceLongPolling: true,
-      }, dbId);
-    } catch (_e) {
-      firestoreDb = getFirestore(app, dbId);
-    }
-    console.log("Firebase Firestore initialized with long-polling and databaseId:", dbId);
-  } catch (err) {
-    console.error("Error initializing Firebase Firestore:", err);
-  }
-}
-
-// High-security PBKDF2 password hashing with timing-safe comparison
+//High-security PBKDF2 password hashing with timing-safe comparison
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString("hex");
   const iterations = 100000;
@@ -275,10 +242,9 @@ export function saveLocalDB(data: DatabaseSchema): void {
 }
 
 // Sync full dataset from Cloud Firestore or seed Firestore if empty
-export async function syncFromFirestore(): Promise<DatabaseSchema> {
-  const currentLocal = initLocalDB();
-  if (!firestoreDb || firestoreQuotaExhausted) return currentLocal;
-
+export async function syncFromFirestore(): Promise<DatabaseSchema> { const 
+  currentLocal = initLocalDB(); if (!firestoreDb || 
+  firestoreQuotaExhausted) return currentLocal;
   try {
     const settingsDocRef = doc(firestoreDb, "config", "settings");
     const adminDocRef = doc(firestoreDb, "config", "admin");
@@ -336,7 +302,7 @@ export async function syncFromFirestore(): Promise<DatabaseSchema> {
           ? currentLocal.candidates
           : DEFAULT_CANDIDATES;
         
-        // Push initial real candidates to Cloud Firestore
+        //Push initial real candidates to Cloud Firestore
         mergedCandidates.forEach((cand) => {
           if (firestoreDb) {
             setDoc(doc(firestoreDb, "candidates", cand.id), sanitizeForFirestore(cand)).catch((e) =>
@@ -418,7 +384,7 @@ export function initDB(): DatabaseSchema {
   return initLocalDB();
 }
 
-// Database helper operations with immediate local cache update + async Cloud Firestore persistence
+//Database helper operations with immediate local cache update + async Cloud Firestore persistence
 
 export function getSettings(): SiteSettings {
   const db = initDB();

@@ -74,9 +74,10 @@ export default function App() {
   // Sync initial URL or mode changes to canonical URL
   useEffect(() => {
     if (typeof window === "undefined") return;
+    document.title = "Sito EMS";
     const targetUrl = getUrlForMode(mode, isGameActive);
     if (window.location.pathname !== targetUrl) {
-      window.history.replaceState({}, document.title, targetUrl);
+      window.history.replaceState({}, "Sito EMS", targetUrl);
     }
   }, []);
 

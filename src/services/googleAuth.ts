@@ -66,4 +66,4 @@ export const googleLogout = async () => {
   localStorage.removeItem("google_sheets_access_token");
 };
 
-export const OAUTH_CLIENT_ID = firebaseConfig.oAuthClientId || "";
+export const OAUTH_CLIENT_ID = (firebaseConfig as any).oAuthClientId || "";

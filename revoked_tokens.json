@@ -1,8 +1,8 @@
 [
   {
     "revokedAt": "2026-08-12T22:24:05.181Z",
-    "token": "0325",
-    "username": "Simone Rizzus"
+    "username": "Simone Rizzus",
+    "token": "0325"
   },
   {
     "revokedAt": "2026-08-12T22:24:02.669Z",
@@ -10,38 +10,38 @@
     "token": "080704"
   },
   {
-    "username": "Khadije'",
+    "revokedAt": "2026-07-29T15:58:09.232Z",
     "token": "19",
-    "revokedAt": "2026-07-29T15:58:09.232Z"
+    "username": "Khadije'"
   },
   {
+    "revokedAt": "2026-08-12T22:24:00.051Z",
     "username": "Antony Romano",
-    "token": "EMS-AR693D",
-    "revokedAt": "2026-08-12T22:24:00.051Z"
+    "token": "EMS-AR693D"
   },
   {
-    "token": "EMS-FM0546",
+    "candidateId": "f5fc4fa12e0a480c",
     "revokedAt": "2026-08-09T16:58:19.099Z",
     "username": "Franco Maxime",
-    "candidateId": "f5fc4fa12e0a480c"
+    "token": "EMS-FM0546"
   },
   {
-    "candidateId": "36587bdeda98f0f0",
+    "username": "Fabry Montana",
     "revokedAt": "2026-08-09T17:02:12.164Z",
-    "token": "EMS-FM6D68",
-    "username": "Fabry Montana"
+    "candidateId": "36587bdeda98f0f0",
+    "token": "EMS-FM6D68"
   },
   {
-    "username": "Franco Stanco",
-    "candidateId": "0ce348a98a9faede",
+    "token": "EMS-FSF57C",
     "revokedAt": "2026-08-09T16:59:26.950Z",
-    "token": "EMS-FSF57C"
+    "candidateId": "0ce348a98a9faede",
+    "username": "Franco Stanco"
   },
   {
+    "candidateId": "55ed4d13991bfdb1",
     "username": "Jolyne Kujo",
-    "token": "EMS-JK1929",
     "revokedAt": "2026-07-29T15:57:53.884Z",
-    "candidateId": "55ed4d13991bfdb1"
+    "token": "EMS-JK1929"
   },
   {
     "candidateId": "55ed4d13991bfdb1",
@@ -50,238 +50,221 @@
     "username": "Jolyne Kujo"
   },
   {
+    "token": "EMS-JK789D",
+    "candidateId": "55ed4d13991bfdb1",
     "revokedAt": "2026-07-29T15:58:07.438Z",
-    "username": "Jolyne Kujo",
-    "candidateId": "55ed4d13991bfdb1",
-    "token": "EMS-JK789D"
-  },
-  {
-    "candidateId": "55ed4d13991bfdb1",
-    "token": "EMS-JKCAFA",
-    "revokedAt": "2026-07-29T15:58:04.953Z",
     "username": "Jolyne Kujo"
   },
   {
-    "revokedAt": "2026-08-02T20:48:21.370Z",
-    "candidateId": "7d1dd52a3a7d6b21",
+    "token": "EMS-JKCAFA",
+    "candidateId": "55ed4d13991bfdb1",
+    "username": "Jolyne Kujo",
+    "revokedAt": "2026-07-29T15:58:04.953Z"
+  },
+  {
     "token": "EMS-LW4203",
-    "username": "Linn Walker"
+    "username": "Linn Walker",
+    "revokedAt": "2026-08-02T20:48:21.370Z",
+    "candidateId": "7d1dd52a3a7d6b21"
   },
   {
-    "token": "EMS-T1FE8",
-    "candidateId": "1acbe51daef7dbfe",
     "revokedAt": "2026-08-02T20:44:22.364Z",
-    "username": "Taranto"
+    "username": "Taranto",
+    "token": "EMS-T1FE8",
+    "candidateId": "1acbe51daef7dbfe"
   },
   {
+    "username": "Walter Esposito",
     "token": "EMS-WE3559",
     "revokedAt": "2026-08-09T16:58:04.333Z",
-    "username": "Walter Esposito",
     "candidateId": "76258bb88796bf08"
   },
   {
-    "username": "Yuki Cross",
-    "revokedAt": "2026-08-09T16:59:08.957Z",
-    "candidateId": "0afe014ddf78acf1",
-    "token": "EMS-YCDB15"
-  },
-  {
-    "revokedAt": "2026-08-23T08:50:00.000Z",
-    "token": "EMS-ML15",
-    "roleName": "Primario di Reparto",
     "username": "Mirko Leone",
-    "candidateId": "cand-15"
+    "roleName": "Primario di Reparto",
+    "token": "EMS-ML15",
+    "candidateId": "cand-15",
+    "revokedAt": "2026-08-23T08:50:00.000Z"
   },
   {
-    "roleName": "Primario di Reparto",
-    "username": "Alex De Santis",
-    "candidateId": "cand-16",
     "token": "EMS-AD16",
-    "revokedAt": "2026-08-23T08:50:00.000Z"
+    "roleName": "Primario di Reparto",
+    "revokedAt": "2026-08-23T08:50:00.000Z",
+    "username": "Alex De Santis",
+    "candidateId": "cand-16"
   },
   {
     "token": "EMS-KP17",
     "roleName": "Primario di Reparto",
-    "username": "Kevin Panetto",
-    "candidateId": "cand-17",
-    "revokedAt": "2026-08-23T08:50:00.000Z"
-  },
-  {
-    "candidateId": "cand-18",
-    "token": "EMS-YC18",
-    "username": "Yuki Cross",
-    "roleName": "Primario di Reparto",
-    "revokedAt": "2026-08-23T08:50:00.000Z"
-  },
-  {
-    "candidateId": "cand-19",
-    "username": "Nick Larsson",
     "revokedAt": "2026-08-23T08:50:00.000Z",
-    "roleName": "Primario di Reparto",
-    "token": "EMS-NL19"
+    "candidateId": "cand-17",
+    "username": "Kevin Panetto"
   },
   {
-    "roleName": "V. Primario di Reparto",
+    "token": "EMS-NL19",
+    "username": "Nick Larsson",
+    "candidateId": "cand-19",
+    "revokedAt": "2026-08-23T08:50:00.000Z",
+    "roleName": "Primario di Reparto"
+  },
+  {
     "username": "Antonio Palermo",
+    "roleName": "V. Primario di Reparto",
     "token": "EMS-AP20",
     "revokedAt": "2026-08-23T08:50:00.000Z",
     "candidateId": "cand-20"
   },
   {
     "token": "EMS-SL21",
+    "candidateId": "cand-21",
+    "roleName": "V. Primario di Reparto",
     "username": "Sofia Leone",
-    "revokedAt": "2026-08-23T08:50:00.000Z",
-    "roleName": "V. Primario di Reparto",
-    "candidateId": "cand-21"
+    "revokedAt": "2026-08-23T08:50:00.000Z"
   },
   {
-    "candidateId": "cand-22",
     "revokedAt": "2026-08-23T08:50:00.000Z",
-    "token": "EMS-LR22",
     "username": "Logan Red",
-    "roleName": "V. Primario di Reparto"
+    "roleName": "V. Primario di Reparto",
+    "candidateId": "cand-22",
+    "token": "EMS-LR22"
   },
   {
     "roleName": "V. Primario di Reparto",
-    "username": "Massimo Arresto",
-    "revokedAt": "2026-08-23T08:50:00.000Z",
-    "candidateId": "cand-23",
-    "token": "EMS-MA23"
-  },
-  {
-    "revokedAt": "2026-08-23T08:50:00.000Z",
-    "candidateId": "cand-24",
-    "roleName": "V. Primario di Reparto",
-    "username": "Matteo Piscitelli",
-    "token": "EMS-MP24"
-  },
-  {
     "candidateId": "cand-25",
-    "token": "EMS-OD25",
-    "roleName": "V. Primario di Reparto",
     "username": "Ozzy Darrell",
-    "revokedAt": "2026-08-23T08:50:00.000Z"
-  },
-  {
-    "roleName": "V. Primario di Reparto",
-    "username": "Lily Flores",
-    "token": "EMS-LF26",
-    "candidateId": "cand-26",
-    "revokedAt": "2026-08-23T08:50:00.000Z"
-  },
-  {
-    "token": "EMS-TS27",
     "revokedAt": "2026-08-23T08:50:00.000Z",
-    "candidateId": "cand-27",
-    "username": "Totò Sauruscuimmu",
+    "token": "EMS-OD25"
+  },
+  {
+    "token": "EMS-LF26",
+    "revokedAt": "2026-08-23T08:50:00.000Z",
+    "candidateId": "cand-26",
+    "username": "Lily Flores",
     "roleName": "V. Primario di Reparto"
   },
   {
-    "revokedAt": "2026-08-23T08:50:00.000Z",
-    "candidateId": "cand-28",
     "roleName": "V. Primario di Reparto",
+    "revokedAt": "2026-08-23T08:50:00.000Z",
+    "username": "Totò Sauruscuimmu",
+    "token": "EMS-TS27",
+    "candidateId": "cand-27"
+  },
+  {
+    "roleName": "V. Primario di Reparto",
+    "revokedAt": "2026-08-23T08:50:00.000Z",
     "username": "Devis Ucarlo",
+    "candidateId": "cand-28",
     "token": "EMS-DU28"
   },
   {
-    "token": "EMS-VE29",
-    "roleName": "V. Primario di Reparto",
-    "username": "Vincenzo Escobar",
     "candidateId": "cand-29",
+    "roleName": "V. Primario di Reparto",
+    "token": "EMS-VE29",
+    "username": "Vincenzo Escobar",
     "revokedAt": "2026-08-23T08:50:00.000Z"
   },
   {
-    "username": "Taranto (Joseph demedici)",
-    "gradeName": "Aspettativa",
-    "roleName": "Aspettativa",
     "revokedAt": "2026-08-23T08:54:52.969Z",
+    "username": "Taranto (Joseph demedici)",
+    "roleName": "Aspettativa",
+    "gradeName": "Aspettativa",
     "token": "EMS-TJ35"
   },
   {
-    "revokedAt": "2026-08-23T09:06:40.626Z",
-    "username": "Mimmo Diesel",
-    "token": "EMS-MD32",
-    "gradeName": "Aspettativa",
-    "roleName": "Aspettativa"
-  },
-  {
-    "username": "Fabry Montana",
     "gradeName": "V. Primario di Reparto",
-    "token": "EMS-FMAA71",
     "candidateId": "36587bdeda98f0f0",
-    "roleName": "V. Primario di Reparto",
-    "revokedAt": "2026-08-22T14:41:20.041Z"
-  },
-  {
-    "token": "EMS-FMD3BF",
-    "roleName": "Direttore Sanitario",
-    "revokedAt": "2026-08-22T14:40:15.169Z",
-    "username": "Franco Maxime",
-    "gradeName": "Direttore Sanitario",
-    "candidateId": "f5fc4fa12e0a480c"
-  },
-  {
-    "revokedAt": "2026-08-22T14:41:00.129Z",
-    "username": "Franco Stanco",
-    "roleName": "V. Supervisore",
-    "gradeName": "V. Supervisore",
-    "candidateId": "0ce348a98a9faede",
-    "token": "EMS-FSAF4B"
-  },
-  {
-    "revokedAt": "2026-08-22T14:40:47.793Z",
-    "token": "EMS-JK5090",
-    "gradeName": "Supervisore",
-    "username": "Jolyne Kujo",
-    "candidateId": "55ed4d13991bfdb1",
-    "roleName": "Supervisore"
-  },
-  {
-    "candidateId": "ef0543d7960b4ff8",
-    "token": "EMS-MD442C",
-    "gradeName": "Responsabile Del Presidio",
-    "roleName": "Responsabile Del Presidio",
-    "revokedAt": "2026-08-22T14:41:06.255Z",
-    "username": "Mimmo Diesel"
-  },
-  {
-    "token": "EMS-T255A",
-    "revokedAt": "2026-08-22T14:40:56.572Z",
-    "gradeName": "Supervisore",
-    "candidateId": "1acbe51daef7dbfe",
-    "roleName": "Supervisore",
-    "username": "Taranto"
-  },
-  {
-    "token": "EMS-WEE69E",
-    "candidateId": "76258bb88796bf08",
-    "revokedAt": "2026-08-22T14:41:25.505Z",
-    "gradeName": "V. Primario di Reparto",
-    "username": "Walter Esposito",
+    "username": "Fabry Montana",
+    "token": "EMS-FMAA71",
+    "revokedAt": "2026-08-22T14:41:20.041Z",
     "roleName": "V. Primario di Reparto"
   },
   {
-    "roleName": "Supervisore Generale",
+    "token": "EMS-FMD3BF",
+    "revokedAt": "2026-08-22T14:40:15.169Z",
+    "candidateId": "f5fc4fa12e0a480c",
+    "roleName": "Direttore Sanitario",
+    "gradeName": "Direttore Sanitario",
+    "username": "Franco Maxime"
+  },
+  {
+    "gradeName": "V. Supervisore",
+    "candidateId": "0ce348a98a9faede",
+    "token": "EMS-FSAF4B",
+    "username": "Franco Stanco",
+    "revokedAt": "2026-08-22T14:41:00.129Z",
+    "roleName": "V. Supervisore"
+  },
+  {
+    "roleName": "Supervisore",
+    "gradeName": "Supervisore",
     "username": "Jolyne Kujo",
-    "hasCdaAccess": false,
+    "token": "EMS-JK5090",
+    "candidateId": "55ed4d13991bfdb1",
+    "revokedAt": "2026-08-22T14:40:47.793Z"
+  },
+  {
+    "roleName": "Supervisore",
+    "token": "EMS-T255A",
+    "gradeName": "Supervisore",
+    "username": "Taranto",
+    "revokedAt": "2026-08-22T14:40:56.572Z",
+    "candidateId": "1acbe51daef7dbfe"
+  },
+  {
+    "token": "EMS-WEE69E",
+    "revokedAt": "2026-08-22T14:41:25.505Z",
+    "username": "Walter Esposito",
+    "gradeName": "V. Primario di Reparto",
+    "candidateId": "76258bb88796bf08",
+    "roleName": "V. Primario di Reparto"
+  },
+  {
     "token": "EMS-JK58DF",
-    "revokedAt": "2026-08-24T20:47:18.392Z",
+    "candidateId": "55ed4d13991bfdb1",
     "gradeName": "Supervisore Generale",
-    "candidateId": "55ed4d13991bfdb1"
+    "roleName": "Supervisore Generale",
+    "revokedAt": "2026-08-24T20:47:18.392Z",
+    "username": "Jolyne Kujo",
+    "hasCdaAccess": false
   },
   {
-    "hasCdaAccess": false,
-    "revokedAt": "2026-08-24T20:47:22.258Z",
-    "gradeName": "Assistente Supervisore",
     "username": "Mimmo Diesel",
+    "candidateId": "ef0543d7960b4ff8",
+    "gradeName": "Assistente Supervisore",
+    "hasCdaAccess": false,
     "roleName": "Assistente Supervisore",
-    "token": "EMS-MD5D0E",
-    "candidateId": "ef0543d7960b4ff8"
+    "revokedAt": "2026-08-24T22:28:50.680Z",
+    "token": "EMS-MD5D0E"
   },
   {
-    "candidateId": "c9fc7fbe5ace11d0",
-    "token": "EMS-GLEA9D",
-    "username": "Giangi Leanza",
-    "revokedAt": "2026-08-07T14:17:39.737Z"
+    "roleName": "Aspettativa",
+    "revokedAt": "2026-08-23T09:06:40.626Z",
+    "username": "Mimmo Diesel",
+    "token": "EMS-MD32",
+    "gradeName": "Aspettativa"
+  },
+  {
+    "token": "EMS-MD442C",
+    "revokedAt": "2026-08-22T14:41:06.255Z",
+    "roleName": "Responsabile Del Presidio",
+    "username": "Mimmo Diesel",
+    "candidateId": "ef0543d7960b4ff8",
+    "gradeName": "Responsabile Del Presidio"
+  },
+  {
+    "token": "EMS-LR37DF",
+    "username": "Logan Red",
+    "roleName": "V. Primario di Reparto",
+    "gradeName": "V. Primario di Reparto",
+    "hasCdaAccess": false,
+    "revokedAt": "2026-08-30T20:42:25.200Z"
+  },
+  {
+    "token": "EMS-SL923R",
+    "username": "Sofia Leone",
+    "roleName": "V. Primario di Reparto",
+    "gradeName": "V. Primario di Reparto",
+    "hasCdaAccess": false,
+    "revokedAt": "2026-08-30T20:43:06.801Z"
   }
 ]

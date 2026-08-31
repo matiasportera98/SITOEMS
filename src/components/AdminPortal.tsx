@@ -101,6 +101,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   const [newEmpRole, setNewEmpRole] = useState<string>("Primario di Reparto");
   const [newEmpCustomToken, setNewEmpCustomToken] = useState<string>("");
   const [newEmpCdaRole, setNewEmpCdaRole] = useState<string>("DEFAULT");
+  const [newEmpDiscordTag, setNewEmpDiscordTag] = useState<string>("");
+  const [newEmpHideFromHierarchy, setNewEmpHideFromHierarchy] = useState<boolean>(false);
   const [isGeneratingToken, setIsGeneratingToken] = useState<boolean>(false);
   const [tokenActionError, setTokenActionError] = useState<string | null>(null);
   const [tokenSuccessMessage, setTokenSuccessMessage] = useState<string | null>(null);
@@ -111,6 +113,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   const [testEmpRole, setTestEmpRole] = useState<string>("V. Primario di Reparto");
   const [testEmpCdaRole, setTestEmpCdaRole] = useState<string>("DEFAULT");
   const [testEmpCustomToken, setTestEmpCustomToken] = useState<string>("");
+  const [testEmpDiscordTag, setTestEmpDiscordTag] = useState<string>("");
+  const [testEmpHideFromHierarchy, setTestEmpHideFromHierarchy] = useState<boolean>(false);
   const [testDurationUnit, setTestDurationUnit] = useState<"unlimited" | "minutes" | "hours" | "days">("minutes");
   const [testDurationValue, setTestDurationValue] = useState<number | string>(30);
   const [isGeneratingTestToken, setIsGeneratingTestToken] = useState<boolean>(false);
@@ -123,6 +127,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
   const [editEmpFullName, setEditEmpFullName] = useState<string>("");
   const [editEmpRole, setEditEmpRole] = useState<string>("");
   const [editEmpCdaRole, setEditEmpCdaRole] = useState<string>("DEFAULT");
+  const [editEmpDiscordTag, setEditEmpDiscordTag] = useState<string>("");
+  const [editEmpHideFromHierarchy, setEditEmpHideFromHierarchy] = useState<boolean>(false);
   const [isUpdatingToken, setIsUpdatingToken] = useState<boolean>(false);
 
   // Confirm Token Revocation Modal State
@@ -1046,6 +1052,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
           customToken: newEmpCustomToken.trim() || undefined,
           cdaRoleName: cdaRoleVal,
           hasCdaAccess: hasCdaVal,
+          discordTag: newEmpDiscordTag.trim() || undefined,
+          hideFromHierarchy: newEmpHideFromHierarchy,
         }),
       });
 
@@ -1057,6 +1065,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
       setTokenSuccessMessage(data.message);
       setNewEmpFullName("");
       setNewEmpCustomToken("");
+      setNewEmpDiscordTag("");
+      setNewEmpHideFromHierarchy(false);
       setNewEmpCdaRole("DEFAULT");
       fetchEmployeeTokens(activeToken);
     } catch (err: any) {
@@ -1100,6 +1110,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
           customToken: testEmpCustomToken.trim() || undefined,
           durationUnit: testDurationUnit,
           durationValue: testDurationUnit === "unlimited" ? undefined : Number(testDurationValue),
+          discordTag: testEmpDiscordTag.trim() || undefined,
+          hideFromHierarchy: testEmpHideFromHierarchy,
         }),
       });
 
@@ -1111,6 +1123,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
       setTestTokenSuccessMessage(data.message);
       setTestEmpFullName("");
       setTestEmpCustomToken("");
+      setTestEmpDiscordTag("");
+      setTestEmpHideFromHierarchy(false);
       setTestEmpCdaRole("DEFAULT");
       fetchEmployeeTokens(activeToken);
     } catch (err: any) {
@@ -1126,11 +1140,41 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
     setEditEmpToken(empToken.token);
     setEditEmpFullName(empToken.username);
     setEditEmpRole(empToken.roleName);
+    setEditEmpDiscordTag(empToken.discordTag || "");
+    setEditEmpHideFromHierarchy(empToken.hideFromHierarchy || false);
     if (empToken.cdaRoleName) {
       setEditEmpCdaRole(empToken.cdaRoleName);
     } else {
       setEditEmpCdaRole("DEFAULT");
     }
+  };
+
+  // Quick toggle hideFromHierarchy from token table
+  const handleToggleHideFromHierarchy = async (empToken: DiscordUserSession) => {
+    const activeToken = token || localStorage.getItem("adminToken") || "";
+    const newHide = !empToken.hideFromHierarchy;
+    try {
+      const response = await fetch(`/api/admin/employee-tokens/${encodeURIComponent(empToken.token)}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          ...getAdminHeaders(activeToken),
+        },
+        body: JSON.stringify({
+          fullName: empToken.username,
+          roleName: empToken.roleName,
+          cdaRoleName: empToken.cdaRoleName || "",
+          hasCdaAccess: empToken.hasCdaAccess,
+          discordTag: empToken.discordTag,
+          hideFromHierarchy: newHide,
+        }),
+      });
+      if (response.ok) {
+        setEmployeeTokens((prev) =>
+          prev.map((t) => (t.token === empToken.token ? { ...t, hideFromHierarchy: newHide } : t))
+        );
+      }
+    } catch (err) {}
   };
 
   // Save Updated Token Permissions
@@ -1158,6 +1202,8 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
           roleName: editEmpRole,
           cdaRoleName: cdaRoleVal,
           hasCdaAccess: hasCdaVal,
+          discordTag: editEmpDiscordTag.trim() || undefined,
+          hideFromHierarchy: editEmpHideFromHierarchy,
         }),
       });
 
@@ -3479,12 +3525,26 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                               className="w-full bg-[#0A0A0B] border border-amber-500/30 rounded-lg py-2.5 px-3 text-sm text-amber-200 font-medium focus:outline-hidden focus:border-amber-500 truncate"
                             >
                               <option value="DEFAULT">Nessun Ruolo CDA</option>
-                              {isHighOwner && <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>}
+                              <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>
                               <option value="Presidente CDA">Presidente CDA</option>
                               <option value="Vice Presidente CDA">Vice Presidente CDA</option>
                               <option value="Segretario CDA">Segretario CDA</option>
                               <option value="Membro CDA">Membro CDA</option>
                             </select>
+                          </div>
+
+                          {/* Discord Tag TEST */}
+                          <div className="space-y-1.5 xl:col-span-2">
+                            <label className="text-xs font-bold uppercase tracking-wider text-purple-300 block truncate">
+                              Tag Discord (Opzionale)
+                            </label>
+                            <input
+                              type="text"
+                              value={testEmpDiscordTag}
+                              onChange={(e) => setTestEmpDiscordTag(e.target.value)}
+                              placeholder="Es. @mario_rossi"
+                              className="w-full bg-[#0A0A0B] border border-purple-500/30 rounded-lg py-2.5 px-3 text-sm text-white font-medium focus:outline-hidden focus:border-purple-500"
+                            />
                           </div>
 
                           {/* Token Personalizzato */}
@@ -3537,7 +3597,21 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                           )}
                         </div>
 
-                        <div className="pt-2 flex justify-end">
+                        {/* Toggle Nascondi da Gerarchia TEST */}
+                        <div className="pt-2 flex items-center justify-between flex-wrap gap-3">
+                          <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 select-none">
+                            <input
+                              type="checkbox"
+                              checked={testEmpHideFromHierarchy}
+                              onChange={(e) => setTestEmpHideFromHierarchy(e.target.checked)}
+                              className="rounded border-white/20 text-purple-600 focus:ring-purple-500 h-4 w-4 bg-slate-900"
+                            />
+                            <span className="flex items-center gap-1.5">
+                              <EyeOff size={14} className="text-purple-400" />
+                              Nascondi questo token dalla Gerarchia EMS
+                            </span>
+                          </label>
+
                           <button
                             type="submit"
                             disabled={isGeneratingTestToken}
@@ -3584,7 +3658,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                     </div>
                   )}
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
                     {/* Nome e Cognome */}
                     <div className="space-y-1.5">
                       <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
@@ -3637,13 +3711,27 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                         onChange={(e) => setNewEmpCdaRole(e.target.value)}
                         className="w-full bg-[#0A0A0B] border border-amber-500/30 rounded-lg py-2.5 px-3 text-sm text-amber-200 font-medium focus:outline-hidden focus:border-amber-500"
                       >
-                        <option value="DEFAULT">Niente</option>
-                        {isHighOwner && <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>}
+                        <option value="DEFAULT">Nessuno</option>
+                        <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>
                         <option value="Presidente CDA">Presidente CDA</option>
                         <option value="Vice Presidente CDA">Vice Presidente CDA</option>
                         <option value="Segretario CDA">Segretario CDA</option>
                         <option value="Membro CDA">Membro CDA</option>
                       </select>
+                    </div>
+
+                    {/* Discord Tag */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
+                        Tag Discord (Opzionale)
+                      </label>
+                      <input
+                        type="text"
+                        value={newEmpDiscordTag}
+                        onChange={(e) => setNewEmpDiscordTag(e.target.value)}
+                        placeholder="Es. @mario_rossi"
+                        className="w-full bg-[#0A0A0B] border border-white/10 rounded-lg py-2.5 px-3 text-sm text-white font-medium focus:outline-hidden focus:border-indigo-500"
+                      />
                     </div>
 
                     {/* Custom Token string (optional) */}
@@ -3661,7 +3749,20 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                     </div>
                   </div>
 
-                  <div className="pt-2 flex justify-end">
+                  <div className="pt-2 flex items-center justify-between flex-wrap gap-3">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 select-none">
+                      <input
+                        type="checkbox"
+                        checked={newEmpHideFromHierarchy}
+                        onChange={(e) => setNewEmpHideFromHierarchy(e.target.checked)}
+                        className="rounded border-white/20 text-indigo-600 focus:ring-indigo-500 h-4 w-4 bg-slate-900"
+                      />
+                      <span className="flex items-center gap-1.5">
+                        <EyeOff size={14} className="text-slate-400" />
+                        Nascondi questo token dalla Gerarchia EMS
+                      </span>
+                    </label>
+
                     <button
                       type="submit"
                       disabled={isGeneratingToken}
@@ -3724,10 +3825,11 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                     <table className="w-full text-left border-collapse">
                       <thead>
                         <tr className="bg-white/5 border-b border-white/5 text-[10px] uppercase font-bold text-slate-400 tracking-wider">
-                          <th className="py-2.5 px-3.5 whitespace-nowrap">Dipendente (Nome e Cognome)</th>
+                          <th className="py-2.5 px-3.5 whitespace-nowrap">Dipendente & Discord</th>
                           <th className="py-2.5 px-3.5 whitespace-nowrap">Grado / Ruolo EMS</th>
                           <th className="py-2.5 px-3.5 whitespace-nowrap">Ruolo & Accesso CDA</th>
                           <th className="py-2.5 px-3.5 whitespace-nowrap">Token di Accesso</th>
+                          <th className="py-2.5 px-3.5 whitespace-nowrap">Gerarchia</th>
                           <th className="py-2.5 px-3.5 whitespace-nowrap">Stato / Scadenza</th>
                           <th className="py-2.5 px-3.5 text-right whitespace-nowrap">Azione</th>
                         </tr>
@@ -3735,17 +3837,25 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                       <tbody className="divide-y divide-white/5 text-xs text-slate-200">
                         {visibleEmployeeTokens.map((empToken) => {
                           const isExpired = empToken.expiresAt ? new Date().getTime() > new Date(empToken.expiresAt).getTime() : false;
+                          const isHiddenFromHier = Boolean(empToken.hideFromHierarchy);
 
                           return (
                             <tr key={empToken.token} className={`hover:bg-white/5 transition-colors ${isExpired ? "bg-rose-950/10 opacity-75" : ""}`}>
                               <td className="py-2.5 px-3.5 font-bold text-white whitespace-nowrap">
                                 <div className="flex items-center gap-2">
                                   <ShieldCheck size={16} className={isMasterKey(empToken) ? "text-rose-500 shrink-0" : empToken.isTestToken ? "text-purple-400 shrink-0" : "text-indigo-400 shrink-0"} />
-                                  <div className="flex items-center gap-1.5 whitespace-nowrap">
-                                    <span>{empToken.username}</span>
-                                    {empToken.isTestToken && (
-                                      <span className="h-5 px-1.5 bg-purple-500/20 text-purple-300 border border-purple-500/40 rounded text-[10px] font-bold font-mono inline-flex items-center gap-1 whitespace-nowrap shrink-0">
-                                        <Sparkles size={10} className="text-purple-400 shrink-0" /> TEST
+                                  <div className="flex flex-col">
+                                    <div className="flex items-center gap-1.5 whitespace-nowrap">
+                                      <span>{empToken.username}</span>
+                                      {empToken.isTestToken && (
+                                        <span className="h-5 px-1.5 bg-purple-500/20 text-purple-300 border border-purple-500/40 rounded text-[10px] font-bold font-mono inline-flex items-center gap-1 whitespace-nowrap shrink-0">
+                                          <Sparkles size={10} className="text-purple-400 shrink-0" /> TEST
+                                        </span>
+                                      )}
+                                    </div>
+                                    {empToken.discordTag && (
+                                      <span className="text-[10px] text-indigo-400/90 font-mono font-normal">
+                                        {empToken.discordTag}
                                       </span>
                                     )}
                                   </div>
@@ -3783,6 +3893,34 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                     )}
                                   </button>
                                 </div>
+                              </td>
+                              {/* Gerarchia Visibility Column */}
+                              <td className="py-2.5 px-3.5 whitespace-nowrap">
+                                {isMasterKey(empToken) ? (
+                                  <span className="text-[10px] text-slate-500 italic">Escluso (Master)</span>
+                                ) : (
+                                  <button
+                                    onClick={() => handleToggleHideFromHierarchy(empToken)}
+                                    className={`h-6 px-2 rounded border text-[10px] font-semibold flex items-center gap-1.5 cursor-pointer transition-all ${
+                                      isHiddenFromHier
+                                        ? "bg-slate-800/90 text-slate-400 border-slate-700 hover:border-slate-500"
+                                        : "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-emerald-500/20"
+                                    }`}
+                                    title={isHiddenFromHier ? "Clicca per rendere visibile nella Gerarchia" : "Clicca per nascondere dalla Gerarchia"}
+                                  >
+                                    {isHiddenFromHier ? (
+                                      <>
+                                        <EyeOff size={11} className="text-slate-400" />
+                                        <span>Nascosto</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <Eye size={11} className="text-emerald-400" />
+                                        <span>In Gerarchia</span>
+                                      </>
+                                    )}
+                                  </button>
+                                )}
                               </td>
                               <td className="py-2.5 px-3.5 text-xs whitespace-nowrap">
                                 {(() => {
@@ -3843,19 +3981,15 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                 })()}
                               </td>
                               <td className="py-2.5 px-3.5 text-right whitespace-nowrap">
-                                {isMasterKey(empToken) ? (
-                                  <span className="h-6 px-2.5 bg-rose-500/20 text-rose-300 border border-rose-500/40 rounded-md text-[11px] font-extrabold inline-flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ml-auto shadow-sm">
-                                    <ShieldCheck size={13} className="text-rose-500 shrink-0" /> Permanente (Master)
-                                  </span>
-                                ) : (
-                                  <div className="flex items-center justify-end gap-1.5">
-                                    <button
-                                      onClick={() => handleStartEditToken(empToken)}
-                                      className="h-6 px-2.5 bg-slate-700/60 hover:bg-slate-600/80 text-slate-200 border border-slate-500/40 rounded-md text-[11px] font-semibold cursor-pointer transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
-                                      title="Modifica Nome, Grado e Ruolo CDA"
-                                    >
-                                      <Edit2 size={11} className="shrink-0" /> Configura
-                                    </button>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  <button
+                                    onClick={() => handleStartEditToken(empToken)}
+                                    className="h-6 px-2.5 bg-slate-700/60 hover:bg-slate-600/80 text-slate-200 border border-slate-500/40 rounded-md text-[11px] font-semibold cursor-pointer transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+                                    title="Modifica Nome, Grado, Ruolo CDA o Discord"
+                                  >
+                                    <Edit2 size={11} className="shrink-0" /> Configura
+                                  </button>
+                                  {!isMasterKey(empToken) ? (
                                     <button
                                       onClick={() => setTokenToConfirmRevoke(empToken)}
                                       className="h-6 px-2.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-md text-[11px] font-semibold cursor-pointer transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
@@ -3863,8 +3997,12 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                     >
                                       <Trash2 size={11} className="shrink-0" />
                                     </button>
-                                  </div>
-                                )}
+                                  ) : (
+                                    <span className="h-6 px-2 bg-rose-500/15 text-rose-300 border border-rose-500/30 rounded-md text-[10px] font-bold inline-flex items-center gap-1 shrink-0">
+                                      <ShieldCheck size={11} className="text-rose-500" /> Master
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                             </tr>
                           );
@@ -3959,6 +4097,20 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                           </select>
                         </div>
 
+                        {/* Discord Tag */}
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold uppercase tracking-wider text-slate-400 block">
+                            Tag Discord (es. @mario_rossi)
+                          </label>
+                          <input
+                            type="text"
+                            value={editEmpDiscordTag}
+                            onChange={(e) => setEditEmpDiscordTag(e.target.value)}
+                            placeholder="Es. @mario_rossi o ID Discord"
+                            className="w-full bg-[#0A0A0B] border border-white/10 rounded-lg py-2.5 px-3 text-sm text-white font-medium focus:outline-hidden focus:border-amber-500"
+                          />
+                        </div>
+
                         {/* Custom Role / Access Override */}
                         <div className="space-y-1.5">
                           <label className="text-xs font-bold uppercase tracking-wider text-amber-400 block flex items-center gap-1">
@@ -3971,7 +4123,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                             className="w-full bg-[#0A0A0B] border border-amber-500/40 rounded-lg py-2.5 px-3 text-sm text-amber-200 font-bold focus:outline-hidden focus:border-amber-500"
                           >
                             <option value="DEFAULT">Nessuno</option>
-                            {isHighOwner && <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>}
+                            <option value="Consigliere Finale CDA">Consigliere Finale CDA</option>
                             <option value="Presidente CDA">Presidente CDA</option>
                             <option value="Vice Presidente CDA">Vice Presidente CDA</option>
                             <option value="Segretario CDA">Segretario CDA</option>
@@ -3980,6 +4132,27 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                           <p className="text-[11px] text-slate-400 pt-1 leading-relaxed">
                             Se selezioni un ruolo o incarico specifico, questo token avrà accesso alla relativa area con i poteri di voto e gestione dedicati, indipendentemente dal suo grado generale.
                           </p>
+                        </div>
+
+                        {/* Toggle Nascondi da Gerarchia */}
+                        <div className="pt-2">
+                          <label className="flex items-center gap-2.5 cursor-pointer text-xs text-slate-300 select-none bg-slate-900/80 p-3 rounded-lg border border-white/10 hover:border-white/20 transition-all">
+                            <input
+                              type="checkbox"
+                              checked={editEmpHideFromHierarchy}
+                              onChange={(e) => setEditEmpHideFromHierarchy(e.target.checked)}
+                              className="rounded border-white/20 text-amber-500 focus:ring-amber-500 h-4 w-4 bg-slate-900 cursor-pointer"
+                            />
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-slate-200 flex items-center gap-1.5">
+                                <EyeOff size={14} className="text-amber-400" />
+                                Nascondi questo token dalla Gerarchia EMS
+                              </span>
+                              <span className="text-[11px] text-slate-400">
+                                Se abilitato, questo utente non comparirà nella pagina pubblica della Gerarchia del personale.
+                              </span>
+                            </div>
+                          </label>
                         </div>
 
                         <div className="pt-4 flex items-center justify-end gap-2 border-t border-white/5">

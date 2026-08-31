@@ -103,6 +103,12 @@ export default function RoleBadge({ roleId, showGrade = true }: RoleBadgeProps) 
       border: "border-cyan-500/20",
       iconColor: "text-cyan-400",
     },
+    "gradient-volontario": {
+      text: "text-[#f78c8c]",
+      bg: "bg-gradient-to-r from-[#a7a7a8]/20 to-[#f78c8c]/25",
+      border: "border-[#f78c8c]/40",
+      iconColor: "text-[#f78c8c]",
+    },
   };
 
   const scheme = colorMap[config.color] || {
