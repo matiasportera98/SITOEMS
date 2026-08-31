@@ -2782,6 +2782,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                           const config = ROLE_CONFIGS[roleId];
                           // Hex mapping to bypass Tailwind dynamic compilation limits
                           const hexColorMap: Record<RoleId, string> = {
+                            [RoleId.VOLONTARIO]: "#94a3b8",
                             [RoleId.V_PRIMARIO]: "#fbbf24",
                             [RoleId.PRIMARIO]: "#b45309",
                             [RoleId.V_RESPONSABILE_PRESIDIO]: "#fb923c",
@@ -3196,6 +3197,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                     const assignedCands = subjectiveBuckets[index] || [];
                                     
                                     const hexColorMap: Record<RoleId, string> = {
+                                      [RoleId.VOLONTARIO]: "#94a3b8",
                                       [RoleId.V_PRIMARIO]: "#fbbf24",
                                       [RoleId.PRIMARIO]: "#b45309",
                                       [RoleId.V_RESPONSABILE_PRESIDIO]: "#fb923c",
@@ -3326,6 +3328,7 @@ export default function AdminPortal({ onConfigChanged }: AdminPortalProps) {
                                     const assignedCands = objectiveBuckets[index] || [];
                                     
                                     const hexColorMap: Record<RoleId, string> = {
+                                      [RoleId.VOLONTARIO]: "#94a3b8",
                                       [RoleId.V_PRIMARIO]: "#fbbf24",
                                       [RoleId.PRIMARIO]: "#b45309",
                                       [RoleId.V_RESPONSABILE_PRESIDIO]: "#fb923c",

@@ -467,18 +467,24 @@ export const OFFICIAL_OWNERS_SEED: OfficialMemberSeed[] = [
     roleName: "Proprietario",
     token: "EMS-ARPROP",
     discordTag: "@anto.romano",
+    cdaRoleName: "Consigliere Finale CDA",
+    hasCdaAccess: true,
   },
   {
     name: "Giovanni Manzo",
     roleName: "Proprietario",
     token: "EMS-GMPROP",
     discordTag: "@smokafps",
+    cdaRoleName: "Consigliere Finale CDA",
+    hasCdaAccess: true,
   },
   {
     name: "Simone Rizzus",
     roleName: "Proprietario",
     token: "EMS-SRPROP",
-    discordTag: "@sinolmao",
+    discordTag: "@simolmao",
+    cdaRoleName: "Consigliere Finale CDA",
+    hasCdaAccess: true,
   },
 ];
 
@@ -505,7 +511,9 @@ export const OFFICIAL_IMAGE_MEMBERS_SEED: OfficialMemberSeed[] = [
   { name: "Yuki Cross", roleName: "V. Responsabile Del Presidio", token: "EMS-YCDB15", discordTag: "@yuki4488" },
   { name: "Massimo Arresto", roleName: "V. Primario di Reparto", token: "EMS-MAFFU23", discordTag: "@elguapo7207" },
   { name: "Matteo Piscitelli", roleName: "V. Primario di Reparto", token: "EMS-MA264H", discordTag: "@12flxppy" },
+  { name: "Londra", roleName: "Volontario", token: "EMS-LG6923", discordTag: "@darkettino" },
   { name: "Matias Corleone", roleName: "Volontario", token: "EMS-MCA496", discordTag: "@_matiascorleone_" },
+  { name: "Mimmo Diesel", roleName: "Volontario", token: "EMS-MD442C", discordTag: "@exo_sniper_" },
 ];
 
 export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
@@ -513,7 +521,6 @@ export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
   "EMS-ARPROP",
   "EMS-GMPROP",
   "EMS-SRPROP",
-  "EMS-MCA496",
   "EMS-TSD286",
   "EMS-FC6767",
   "EMS-LBC6A6",
@@ -536,6 +543,9 @@ export const ALLOWED_OFFICIAL_TOKEN_KEYS = new Set<string>([
   "EMS-YCDB15",
   "EMS-MAFFU23",
   "EMS-MA264H",
+  "EMS-LG6923",
+  "EMS-MCA496",
+  "EMS-MD442C",
 ]);
 
 

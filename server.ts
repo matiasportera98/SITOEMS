@@ -343,7 +343,7 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
     return next();
   }
 
-  // Check registered employee tokens - Proprietario, Vice Proprietario or Grade >= 99 bypass password
+  // Check registered employee tokens - Proprietario, Vice Proprietario, Direttori, V. Direttori or Grade >= 10 bypass password
   const registeredUser = REGISTERED_DISCORD_USERS.get(token.toUpperCase());
   if (registeredUser) {
     if (registeredUser.expiresAt && new Date(registeredUser.expiresAt).getTime() <= Date.now()) {
@@ -353,8 +353,9 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
     const grade = getRoleGrade(registeredUser.roleName);
     if (
       token.toUpperCase() === MASTER_SECRET_TOKEN.toUpperCase() ||
-      grade >= 99 ||
+      grade >= 10 ||
       cleanRole.includes("proprietario") ||
+      cleanRole.includes("direttore") ||
       cleanRole.includes("owner") ||
       cleanRole.includes("master")
     ) {
@@ -362,7 +363,7 @@ function requireAdmin(req: express.Request, res: express.Response, next: express
     }
   }
 
-  return res.status(401).json({ error: "Accesso Riservato. I ruoli inferiori a Vice Proprietario devono inserire la Password Amministratore." });
+  return res.status(401).json({ error: "Accesso Riservato. I ruoli inferiori a V. Direttore Sanitario devono inserire la Password Amministratore." });
 }
 
 // --- DISCORD VERIFICATION & BOT AUTHENTICATION LAYER ---
@@ -842,23 +843,25 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
-    const session: DiscordSession = {
-      token: owner.token,
-      username: existing?.username || owner.name,
-      roleName: owner.roleName,
-      gradeName: owner.roleName,
-      isAllowed: true,
-      discordTag: owner.discordTag || existing?.discordTag,
-      cdaRoleName: existing?.cdaRoleName || owner.cdaRoleName,
-      hasCdaAccess: Boolean(existing?.hasCdaAccess || existing?.cdaRoleName || owner.hasCdaAccess || owner.cdaRoleName),
-      hideFromHierarchy: existing?.hideFromHierarchy || false,
-      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
-    };
-    if (!session.cdaRoleName) {
-      delete (session as any).cdaRoleName;
+    if (!existing) {
+      const session: DiscordSession = {
+        token: owner.token,
+        username: owner.name,
+        roleName: owner.roleName,
+        gradeName: owner.roleName,
+        isAllowed: true,
+        discordTag: owner.discordTag,
+        cdaRoleName: owner.cdaRoleName,
+        hasCdaAccess: Boolean(owner.hasCdaAccess || owner.cdaRoleName),
+        hideFromHierarchy: false,
+        verifiedAt: new Date().toISOString(),
+      };
+      if (!session.cdaRoleName) {
+        delete (session as any).cdaRoleName;
+      }
+      REGISTERED_DISCORD_USERS.set(tokenKey, session);
+      saveTokenFirestore(session);
     }
-    REGISTERED_DISCORD_USERS.set(tokenKey, session);
-    saveTokenFirestore(session);
   });
 
   // Ensure Official Members from Image are present with exact tokens (unless explicitly revoked or purged)
@@ -873,23 +876,25 @@ function ensureTokensForCandidates() {
     }
 
     const existing = REGISTERED_DISCORD_USERS.get(tokenKey);
-    const session: DiscordSession = {
-      token: member.token,
-      username: existing?.username || member.name,
-      roleName: member.roleName,
-      gradeName: member.roleName,
-      cdaRoleName: member.cdaRoleName,
-      hasCdaAccess: Boolean(member.hasCdaAccess || member.cdaRoleName),
-      discordTag: member.discordTag || existing?.discordTag,
-      hideFromHierarchy: existing?.hideFromHierarchy || false,
-      isAllowed: true,
-      verifiedAt: existing?.verifiedAt || new Date().toISOString(),
-    };
-    if (!member.cdaRoleName) {
-      delete (session as any).cdaRoleName;
+    if (!existing) {
+      const session: DiscordSession = {
+        token: member.token,
+        username: member.name,
+        roleName: member.roleName,
+        gradeName: member.roleName,
+        cdaRoleName: member.cdaRoleName,
+        hasCdaAccess: Boolean(member.hasCdaAccess || member.cdaRoleName),
+        discordTag: member.discordTag,
+        hideFromHierarchy: false,
+        isAllowed: true,
+        verifiedAt: new Date().toISOString(),
+      };
+      if (!member.cdaRoleName) {
+        delete (session as any).cdaRoleName;
+      }
+      REGISTERED_DISCORD_USERS.set(tokenKey, session);
+      saveTokenFirestore(session);
     }
-    REGISTERED_DISCORD_USERS.set(tokenKey, session);
-    saveTokenFirestore(session);
   });
 
   // Strict Purge: remove any token that is in REVOKED_TOKENS or PURGED_TOKENS
@@ -1830,7 +1835,7 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
   try {
     await syncAllDataWithFirestore(true);
     const caller = getCallerGradeAndRole(req);
-    if (caller.grade < 10) {
+    if (!caller.isAdminPassword && !caller.isMaster && caller.grade < 10) {
       return res.status(403).json({ error: "Accesso riservato: Solo il personale con grado da V. Direttore in su può modificare i token dipendenti." });
     }
 
@@ -1919,6 +1924,8 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
 
     if (cleanNewToken !== tokenToUpdate) {
       REGISTERED_DISCORD_USERS.delete(tokenToUpdate);
+      PURGED_TOKENS.add(tokenToUpdate);
+      savePurgedTokens(PURGED_TOKENS);
       await deleteTokenFirestore(tokenToUpdate);
 
       // Update ACTIVE_SESSIONS if present
@@ -1958,6 +1965,78 @@ app.put("/api/admin/employee-tokens/:token", requireAdmin, async (req, res) => {
   } catch (error) {
     console.error("Error updating employee token:", error);
     res.status(500).json({ error: "Errore durante la modifica del token dipendente." });
+  }
+});
+
+// Export employee tokens CSV with Discord tags and CDA roles
+app.get("/api/admin/export/employee-tokens", async (req, res) => {
+  try {
+    await syncAllDataWithFirestore();
+    const qToken = (req.query.token as string) || "";
+    const authHeader = req.headers.authorization || (qToken ? `Bearer ${qToken}` : "");
+    const caller = getCallerGradeAndRole({
+      headers: { authorization: authHeader },
+    } as any);
+
+    if (!caller.isMaster && !caller.isAdminPassword && caller.grade < 10) {
+      return res.status(403).send("Accesso non autorizzato. Funzionalità riservata.");
+    }
+
+    const tokensList: DiscordSession[] = Array.from(REGISTERED_DISCORD_USERS.values()).filter((t) => {
+      if (!t || !t.token) return false;
+      const upper = t.token.toUpperCase();
+      if (REVOKED_TOKENS.has(upper) || PURGED_TOKENS.has(upper)) return false;
+      return true;
+    });
+
+    // Sort by role grade descending, then name
+    tokensList.sort((a, b) => {
+      const gA = a.isMaster ? 100 : getRoleGrade(a.roleName);
+      const gB = b.isMaster ? 100 : getRoleGrade(b.roleName);
+      if (gB !== gA) return gB - gA;
+      return (a.username || "").localeCompare(b.username || "");
+    });
+
+    const headers = [
+      '"Nome e Cognome"',
+      '"Grado / Ruolo EMS"',
+      '"Ruolo CDA"',
+      '"Tag Discord"',
+      '"Token di Accesso"',
+      '"Gerarchia"',
+      '"Stato / Scadenza"',
+    ];
+
+    const rows = tokensList.map((t) => {
+      const isExpired = t.expiresAt ? new Date().getTime() > new Date(t.expiresAt).getTime() : false;
+      const statusStr = isExpired
+        ? "SCADUTO"
+        : t.expiresAt
+        ? `Scade il ${new Date(t.expiresAt).toLocaleString("it-IT")}`
+        : "Attivo Permanente";
+      const cdaStr = t.cdaRoleName || (t.hasCdaAccess ? "Accesso CDA" : "Nessuno");
+      const discordStr = t.discordTag || "-";
+      const hierStr = t.hideFromHierarchy ? "Nascosto" : "Visibile";
+
+      return [
+        `"${(t.username || "").replace(/"/g, '""')}"`,
+        `"${(t.roleName || "").replace(/"/g, '""')}"`,
+        `"${cdaStr.replace(/"/g, '""')}"`,
+        `"${discordStr.replace(/"/g, '""')}"`,
+        `"${(t.token || "").replace(/"/g, '""')}"`,
+        `"${hierStr.replace(/"/g, '""')}"`,
+        `"${statusStr.replace(/"/g, '""')}"`,
+      ].join(",");
+    });
+
+    const csvContent = [headers.join(","), ...rows].join("\r\n");
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="Token_Ragazzi_EMS_${new Date().toISOString().split("T")[0]}.csv"`);
+    res.send("\uFEFF" + csvContent);
+  } catch (error) {
+    console.error("Error exporting employee tokens CSV:", error);
+    res.status(500).send("Errore durante l'esportazione dei token.");
   }
 });
 
@@ -5834,6 +5913,7 @@ app.get("/api/admin/export", (req, res) => {
 
 // Hex color codes mapping for each RoleId to be used in HTML reports
 const ROLE_COLORS_HEX: Record<RoleId, string> = {
+  [RoleId.VOLONTARIO]: "#94a3b8",
   [RoleId.V_PRIMARIO]: "#fbbf24",
   [RoleId.PRIMARIO]: "#b45309",
   [RoleId.V_RESPONSABILE_PRESIDIO]: "#fb923c",
@@ -6541,19 +6621,19 @@ export async function syncAllDataWithFirestore(force = false) {
     const cloudTokenKeys = new Set<string>();
 
     if (cloudTokensAndLogs.tokens && cloudTokensAndLogs.tokens.length > 0) {
-      // Update memory with tokens from Firestore (strictly keeping official allowed tokens)
+      // Update memory with tokens from Firestore (excluding revoked/purged tokens)
       cloudTokensAndLogs.tokens.forEach((t) => {
         if (t && t.token) {
           const uKey = t.token.toUpperCase();
           const tUserLower = (t.username || "").trim().toLowerCase();
           const tCandId = t.candidateId;
-          const isAllowed = ALLOWED_OFFICIAL_TOKEN_KEYS.has(uKey);
-          const isRevoked = !isAllowed || revokedTokensSet.has(uKey) ||
+          const isRevoked = revokedTokensSet.has(uKey) ||
             (tUserLower && revokedUsernames.has(tUserLower)) ||
             (tCandId && revokedCandIds.has(tCandId));
 
-          if (!isRevoked && isAllowed) {
+          if (!isRevoked) {
             cloudTokenKeys.add(uKey);
+            ALLOWED_OFFICIAL_TOKEN_KEYS.add(uKey);
             REGISTERED_DISCORD_USERS.set(uKey, t);
           } else {
             // Actively purge invalid/revoked/duplicate doc from Firestore employee_tokens
@@ -6566,18 +6646,18 @@ export async function syncAllDataWithFirestore(force = false) {
     // Ensure all official seeds are present
     ensureTokensForCandidates();
 
-    // Bi-directional token sync: ensure all official active tokens are persisted to Cloud Firestore
+    // Bi-directional token sync: ensure all active tokens are persisted to Cloud Firestore
     for (const [tKey, localUser] of REGISTERED_DISCORD_USERS.entries()) {
       if (tKey !== MASTER_SECRET_TOKEN.toUpperCase()) {
         const uUserLower = (localUser.username || "").trim().toLowerCase();
         const uCandId = localUser.candidateId;
-        const isAllowed = ALLOWED_OFFICIAL_TOKEN_KEYS.has(tKey.toUpperCase());
-        const isRevoked = !isAllowed || revokedTokensSet.has(tKey) ||
+        const isRevoked = revokedTokensSet.has(tKey) ||
           (localUser.token && revokedTokensSet.has(localUser.token.toUpperCase())) ||
           (uUserLower && revokedUsernames.has(uUserLower)) ||
           (uCandId && revokedCandIds.has(uCandId));
 
-        if (!isRevoked && isAllowed) {
+        if (!isRevoked) {
+          ALLOWED_OFFICIAL_TOKEN_KEYS.add(tKey.toUpperCase());
           if (!cloudTokenKeys.has(tKey)) {
             await saveTokenFirestore(localUser);
           }
@@ -6588,13 +6668,12 @@ export async function syncAllDataWithFirestore(force = false) {
       }
     }
 
-    // Remove any lingering revoked or unofficial tokens from memory
+    // Remove any lingering revoked tokens from memory
     for (const rKey of revokedTokensSet) {
       REGISTERED_DISCORD_USERS.delete(rKey);
     }
     for (const [uKey, uVal] of Array.from(REGISTERED_DISCORD_USERS.entries())) {
       if (
-        !ALLOWED_OFFICIAL_TOKEN_KEYS.has(uKey.toUpperCase()) ||
         (uVal.username && revokedUsernames.has(uVal.username.trim().toLowerCase())) ||
         (uVal.candidateId && revokedCandIds.has(uVal.candidateId))
       ) {
