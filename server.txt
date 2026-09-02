@@ -3797,7 +3797,7 @@ app.post("/api/candidature", (req, res) => {
       }
     }
 
-    // Check if user already has an active pending candidature and automatically cancel/replace it to allow a fresh submission
+    // Check if user already has an active pending candidature
     const existing = getCandidature();
     const pendingExisting = existing.find((c) => {
       if (c.status !== "PENDING") return false;
@@ -3806,10 +3806,13 @@ app.post("/api/candidature", (req, res) => {
       return false;
     });
 
-
     if (pendingExisting) {
-      // Automatically cancel the old pending request so a new one can take its place
-      cancelCandidatura(pendingExisting.id, "Sostituita da una nuova candidatura inviata dall'utente.");
+      return res.json({
+        success: true,
+        alreadyPending: true,
+        candidatura: pendingExisting,
+        message: "Hai già una candidatura in valutazione! Di seguito puoi visualizzare lo stato della tua richiesta.",
+      });
     }
 
     const newCand = addCandidatura({
@@ -3842,6 +3845,7 @@ app.post("/api/candidature", (req, res) => {
   }
 });
 
+// Check status of user's candidature (By token or by ID or by name)
 app.get("/api/candidature/my-status", (req, res) => {
   try {
     const queryId = req.query.id ? sanitizeString(req.query.id as string, 50) : "";
@@ -3855,36 +3859,40 @@ app.get("/api/candidature/my-status", (req, res) => {
 
     const all = getCandidature();
 
-    // Blocca e mostra il riepilogo SOLO se c'è una candidatura in stato PENDING
-    const pendingCand = all.find((c) => {
-      if (c.status !== "PENDING") return false;
-      if (queryId && (c.id === queryId || encodeURIComponent(c.id) === queryId)) return true;
-      if (userToken && c.token && c.token.toUpperCase() === userToken) return true;
-      if (queryFullName && c.fullName.toLowerCase() === queryFullName.toLowerCase()) return true;
-      return false;
-    });
-
-    if (pendingCand) {
-      return res.json({ success: true, candidatura: pendingCand });
+    // 1. Search by exact ID if provided
+    if (queryId) {
+      const found = all.find((c) => c.id === queryId || encodeURIComponent(c.id) === queryId);
+      if (found) {
+        return res.json({ success: true, candidatura: found });
+      }
     }
 
-    // Filtra tutte le candidature appartenenti all'utente per lo storico completo
-    const userCands = all.filter((c) => {
-      if (userToken && c.token && c.token.toUpperCase() === userToken) return true;
-      if (queryFullName && c.fullName.toLowerCase() === queryFullName.toLowerCase()) return true;
-      return false;
-    });
+    // 2. Search by token if authenticated
+    if (userToken) {
+      const session = REGISTERED_DISCORD_USERS.get(userToken);
+      const foundByToken = all.find((c) => {
+        if (c.token && c.token.toUpperCase() === userToken) return true;
+        if (session?.username && c.fullName.toLowerCase() === session.username.toLowerCase()) return true;
+        return false;
+      });
+      if (foundByToken) {
+        return res.json({ success: true, candidatura: foundByToken });
+      }
+    }
 
-    // Ordina dalla più recente alla meno recente
-    userCands.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
+    // 3. Search by fullName if provided
+    if (queryFullName) {
+      const foundByName = all.find((c) => c.fullName.toLowerCase() === queryFullName.toLowerCase());
+      if (foundByName) {
+        return res.json({ success: true, candidatura: foundByName });
+      }
+    }
 
-    return res.json({ success: true, candidatura: null, history: userCands });
+    return res.json({ success: true, candidatura: null });
   } catch (error) {
-    res.status(500).json({ error: "Errore durante la verifica dello stato." });
+    res.status(500).json({ error: "Errore durante la verifica dello stato candidatura." });
   }
 });
-
-
 
 // Candidate user endpoint to cancel/withdraw their own candidatura (reason is MANDATORY)
 const handleCancelCandidatura = (req: express.Request, res: express.Response) => {

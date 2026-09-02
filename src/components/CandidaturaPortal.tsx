@@ -18,6 +18,7 @@ import {
   Lock,
   Info,
   ArrowRight,
+  History,
 } from "lucide-react";
 import {
   Candidatura,
@@ -43,8 +44,9 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
 
-  // Status tracking state
+  // Status tracking state & History state
   const [activeCandidatura, setActiveCandidatura] = useState<Candidatura | null>(null);
+  const [candidatureHistory, setCandidaturaHistory] = useState<Candidatura[] | Candidatura | null>(null);
   const [isLoadingStatus, setIsLoadingStatus] = useState<boolean>(true);
 
   // Cancellation modal state
@@ -90,6 +92,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
       setActiveCandidatura(data.candidatura);
       setShowCancelModal(false);
       setCancelReason("");
+      fetchMyStatus(true);
     } catch (err: any) {
       setCancelError(err.message || "Errore di connessione durante l'annullamento.");
     } finally {
@@ -102,7 +105,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
   const validLinesCount = linesArray.length;
   const isLineCountValid = validLinesCount >= 5;
 
-  // Fetch active user candidatura status from server
+  // Fetch active user candidatura status and history from server
   const fetchMyStatus = async (isSilent = false) => {
     if (!isSilent) setIsLoadingStatus(true);
     try {
@@ -121,13 +124,12 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
       });
 
       const data = await response.json();
-      if (response.ok && data.candidatura) {
-        setActiveCandidatura(data.candidatura);
-        localStorage.setItem("myCandidaturaId", data.candidatura.id);
-        localStorage.setItem("myCandidaturaName", data.candidatura.fullName);
-      } else {
-        if (!savedCandId && !savedCandName) {
-          setActiveCandidatura(null);
+      if (response.ok) {
+        setActiveCandidatura(data.candidatura || null);
+        setCandidaturaHistory(data.history || null); // <-- Questa riga assegna lo storico alla variabile del componente!
+        if (data.candidatura) {
+          localStorage.setItem("myCandidaturaId", data.candidatura.id);
+          localStorage.setItem("myCandidaturaName", data.candidatura.fullName);
         }
       }
     } catch (err) {
@@ -199,11 +201,6 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
 
       const data = await response.json();
       if (!response.ok) {
-        if (data.candidatura) {
-          setActiveCandidatura(data.candidatura);
-          localStorage.setItem("myCandidaturaId", data.candidatura.id);
-          localStorage.setItem("myCandidaturaName", data.candidatura.fullName);
-        }
         throw new Error(data.error || "Errore durante l'invio della candidatura.");
       }
 
@@ -213,6 +210,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
         localStorage.setItem("myCandidaturaName", data.candidatura.fullName);
       }
       setFormSuccess(data.message || "Candidatura inviata con successo! È ora in fase di valutazione.");
+      fetchMyStatus(true);
     } catch (err: any) {
       setFormError(err.message || "Errore durante l'invio.");
     } finally {
@@ -228,6 +226,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
     setTimeSlot("");
     setFormError(null);
     setFormSuccess(null);
+    fetchMyStatus(true);
   };
 
   if (isLoadingStatus) {
@@ -244,10 +243,24 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
   const currentRoleStyle = getRoleBadgeStyle(currentRole);
   const desiredRoleStyle = getRoleBadgeStyle(desiredRole);
 
+  // Helper to render history badges cleanly
+  const renderHistoryStatusBadge = (status: string) => {
+    switch (status) {
+      case "APPROVED":
+        return <span className="px-2.5 py-0.5 rounded-full text-2xs font-bold uppercase bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Accettata</span>;
+      case "REJECTED":
+        return <span className="px-2.5 py-0.5 rounded-full text-2xs font-bold uppercase bg-rose-500/20 text-rose-300 border border-rose-500/30">Rifiutata</span>;
+      case "CANCELLED":
+        return <span className="px-2.5 py-0.5 rounded-full text-2xs font-bold uppercase bg-amber-500/20 text-amber-300 border border-amber-500/30">Annullata</span>;
+      default:
+        return <span className="px-2.5 py-0.5 rounded-full text-2xs font-bold uppercase bg-slate-700 text-slate-300">In valutazione</span>;
+    }
+  };
+
   return (
-    <div className="max-w-4xl mx-auto py-6 sm:py-10 px-2 sm:px-6 w-full max-w-full overflow-x-hidden">
+    <div className="max-w-4xl mx-auto py-6 sm:py-10 px-2 sm:px-6 w-full max-w-full overflow-x-hidden space-y-8">
       {/* Title & Banner - Matches Main Site EMS Theme */}
-      <div className="text-center mb-10 space-y-3">
+      <div className="text-center space-y-3">
         <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-gradient-to-r from-red-600/20 via-rose-600/20 to-amber-600/20 border border-red-500/30 text-rose-300 text-xs font-bold uppercase tracking-wider shadow-inner">
           <Sparkles size={14} className="text-red-400" />
           Modulo Ufficiale Avanzamento Carriera EMS
@@ -294,7 +307,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
 
             <div className="flex items-center gap-2 flex-wrap justify-end">
               <button
-                onClick={fetchMyStatus}
+                onClick={() => fetchMyStatus()}
                 className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 bg-red-950/30 border border-red-800/40 px-3 py-1.5 rounded-xl cursor-pointer transition-all active:scale-95 font-semibold"
               >
                 <RefreshCw size={12} /> Aggiorna Stato
@@ -334,9 +347,6 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
                 Candidato
               </span>
               <p className="text-base font-bold text-white">{activeCandidatura.fullName}</p>
-              {activeCandidatura.token && (
-                <p className="text-2xs font-mono text-red-400">Token: {activeCandidatura.token}</p>
-              )}
             </div>
 
             <div className="bg-[#0a0a0f] border border-slate-800/80 rounded-2xl p-4 space-y-2">
@@ -399,352 +409,237 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
         </motion.div>
       )}
 
-      {/* --- STATE 2: APPROVED (ACCETTATA) --- */}
-      {activeCandidatura && activeCandidatura.status === "APPROVED" && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-[#111116] border-2 border-emerald-500/60 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-md space-y-6"
-        >
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-6 border-b border-emerald-950">
-            <div className="flex items-center gap-3.5">
-              <div className="p-3 bg-emerald-950/80 rounded-2xl border border-emerald-500/50 text-emerald-400">
-                <CheckCircle2 size={32} />
-              </div>
-              <div>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-xs font-bold uppercase tracking-wider border border-emerald-500/40">
-                  Candidatura Accettata
-                </span>
-                <h2 className="text-xl font-bold text-white mt-1">
-                  Congratulazioni {activeCandidatura.fullName}!
-                </h2>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-emerald-950/30 border border-emerald-800/50 rounded-2xl p-5 text-sm text-emerald-200 space-y-2">
-            <p className="font-semibold text-emerald-300">
-              La tua candidatura per il ruolo di{" "}
-              {(() => {
-                const badge = getRoleBadgeStyle(activeCandidatura.desiredRole);
-                return (
-                  <span className={`inline-block px-2.5 py-0.5 rounded-md text-xs mx-1 ${badge.className}`} style={badge.style}>
-                    {activeCandidatura.desiredRole}
-                  </span>
-                );
-              })()}{" "}
-              è stata approvata dalla Direzione EMS.
-            </p>
-            {activeCandidatura.reviewedAt && (
-              <p className="text-xs text-emerald-400/80">
-                Data approvazione: {new Date(activeCandidatura.reviewedAt).toLocaleString("it-IT")}
-              </p>
-            )}
-          </div>
-
-          <div className="pt-2 text-center">
-            <button
-              onClick={handleResetNewApplication}
-              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase tracking-wider border border-slate-700 transition-all cursor-pointer"
-            >
-              <Send size={14} /> Invia una Nuova Candidatura
-            </button>
-          </div>
-        </motion.div>
-      )}
-
-      {/* --- STATE 3: REJECTED (RIFIUTATA) --- */}
-      {activeCandidatura && activeCandidatura.status === "REJECTED" && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-[#111116] border-2 border-rose-500/60 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-md space-y-6"
-        >
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-6 border-b border-rose-950">
-            <div className="flex items-center gap-3.5">
-              <div className="p-3 bg-rose-950/80 rounded-2xl border border-rose-500/50 text-rose-400">
-                <XCircle size={32} />
-              </div>
-              <div>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/20 text-rose-300 text-xs font-bold uppercase tracking-wider border border-rose-500/40">
-                  Candidatura Non Accolta
-                </span>
-                <h2 className="text-xl font-bold text-white mt-1">
-                  Esito Candidatura per {activeCandidatura.fullName}
-                </h2>
-              </div>
-            </div>
-          </div>
-
-          {/* Rejection Reason Card */}
-          <div className="bg-rose-950/40 border border-rose-800/60 rounded-2xl p-5 space-y-3">
-            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-rose-300">
-              <AlertCircle size={16} /> Motivo del Rifiuto:
-            </div>
-            <div className="bg-[#0a0a0f] p-4 rounded-xl border border-rose-900/50 text-xs text-rose-100 font-medium leading-relaxed whitespace-pre-wrap">
-              {activeCandidatura.rejectionReason || "Nessun motivo aggiuntivo specificato dalla Direzione."}
-            </div>
-            {activeCandidatura.reviewedAt && (
-              <p className="text-2xs text-rose-300/70 pt-1">
-                Data valutazione: {new Date(activeCandidatura.reviewedAt).toLocaleString("it-IT")}
-              </p>
-            )}
-          </div>
-
-          <div className="pt-2 text-center">
-            <button
-              onClick={handleResetNewApplication}
-              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-red-600 to-rose-600 hover:from-red-500 hover:to-rose-500 text-white font-bold text-xs uppercase tracking-wider shadow-lg shadow-red-950/50 transition-all cursor-pointer active:scale-95"
-            >
-              <Send size={14} /> Presenta Nuova Candidatura Corretta
-            </button>
-          </div>
-        </motion.div>
-      )}
-
-      {/* --- STATE 4: CANCELLED (ANNULLATA DALL'UTENTE) --- */}
-      {activeCandidatura && activeCandidatura.status === "CANCELLED" && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-[#111116] border-2 border-amber-500/60 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-md space-y-6"
-        >
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pb-6 border-b border-amber-950">
-            <div className="flex items-center gap-3.5">
-              <div className="p-3 bg-amber-950/80 rounded-2xl border border-amber-500/50 text-amber-400">
-                <XCircle size={32} />
-              </div>
-              <div>
-                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/20 text-amber-300 text-xs font-bold uppercase tracking-wider border border-amber-500/40">
-                  Candidatura Annullata
-                </span>
-                <h2 className="text-xl font-bold text-white mt-1">
-                  Candidatura Annullata per {activeCandidatura.fullName}
-                </h2>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-amber-950/30 border border-amber-800/50 rounded-2xl p-5 space-y-3">
-            <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-amber-300">
-              <AlertCircle size={16} /> Motivo dell'Annullamento:
-            </div>
-            <div className="bg-[#0a0a0f] p-4 rounded-xl border border-amber-900/40 text-xs text-amber-100 font-medium leading-relaxed whitespace-pre-wrap">
-              {activeCandidatura.cancellationReason || "Annullata direttamente dall'utente."}
-            </div>
-            {activeCandidatura.cancelledAt && (
-              <p className="text-2xs text-amber-400/70 pt-1">
-                Data Annullamento: {new Date(activeCandidatura.cancelledAt).toLocaleString("it-IT")}
-              </p>
-            )}
-          </div>
-
-          <div className="pt-2 text-center">
-            <button
-              onClick={handleResetNewApplication}
-              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs uppercase tracking-wider border border-slate-700 transition-all cursor-pointer active:scale-95"
-            >
-              <Send size={14} /> Presenta una Nuova Candidatura
-            </button>
-          </div>
-        </motion.div>
-      )}
-
-      {/* --- FORM STATE: NO ACTIVE CANDIDATURE OR RESET --- */}
-      {!activeCandidatura && (
-        <form
-          onSubmit={handleSubmit}
-          className="bg-[#111116] border border-slate-800/90 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-md space-y-6"
-        >
-          {formError && (
-            <div className="bg-rose-950/80 border border-rose-500/50 rounded-2xl p-4 flex items-center gap-3 text-xs text-rose-200">
-              <AlertCircle size={18} className="text-rose-400 shrink-0" />
-              <span>{formError}</span>
-            </div>
-          )}
-
-          {formSuccess && (
-            <div className="bg-emerald-950/80 border border-emerald-500/50 rounded-2xl p-4 flex items-center gap-3 text-xs text-emerald-200">
-              <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
-              <span>{formSuccess}</span>
-            </div>
-          )}
-
-          {/* Field 1: Nome e Cognome */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-              <User size={14} className="text-red-400" />
-              1. Nome e Cognome <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="text"
-              required
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="Es. Mario Rossi"
-              className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none transition-all"
-            />
-          </div>
-
-          {/* Field 2 & 3: Ruolo Attuale e Ruolo Desiderato */}
-          <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Field 2: Ruolo Attuale */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                    <Shield size={14} className="text-amber-400" />
-                    2. Ruolo Attuale <span className="text-rose-400">*</span>
-                  </label>
-                  {/* Live Role Badge Preview */}
-                  <span
-                    className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${currentRoleStyle.className}`}
-                    style={currentRoleStyle.style}
-                  >
-                    {currentRole}
-                  </span>
+      {/* --- FORM STATE: NO ACTIVE PENDING CANDIDATURE --- */}
+        {!activeCandidatura && (
+          <div className="space-y-8">
+            {/* STORICO CANDIDATURE PASSATE */}
+            {Array.isArray(candidatureHistory) && candidatureHistory.length > 0 && (
+              <div className="bg-[#111116] border border-slate-800/90 rounded-3xl p-5 sm:p-6 shadow-xl backdrop-blur-md space-y-4">
+                <div className="flex items-center gap-2.5 pb-3 border-b border-slate-800/80 text-xs font-bold uppercase tracking-wider text-slate-300">
+                  <History size={16} className="text-red-400" />
+                  Storico Ultime Candidature Inviate
                 </div>
-                <select
-                  value={currentRole}
-                  onChange={(e) => {
-                    const newRole = e.target.value;
-                    setCurrentRole(newRole);
-                    setDesiredRole(getNextPromotionRole(newRole));
-                  }}
-                  className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white outline-none cursor-pointer transition-all font-medium"
-                >
-                  {CANDIDATURA_CURRENT_ROLES.map((r) => (
-                    <option key={r.name} value={r.name} className="bg-slate-900 text-white font-medium">
-                      {r.name}
-                    </option>
-                  ))}
-                </select>
-                <p className="text-2xs text-slate-500">
-                  Seleziona il grado attualmente ricoperto nel corpo EMS.
-                </p>
-              </div>
-
-              {/* Field 3: Ruolo Desiderato (Locked to immediate next superior grade) */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                    <Award size={14} className="text-red-400" />
-                    3. Ruolo Desiderato (Grado Superiore) <span className="text-rose-400">*</span>
-                  </label>
-                  {/* Live Role Badge Preview */}
-                  <span
-                    className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${desiredRoleStyle.className}`}
-                    style={desiredRoleStyle.style}
-                  >
-                    {desiredRole}
-                  </span>
-                </div>
-                <div className="relative">
-                  <div className="w-full bg-[#0a0a0f]/80 border border-slate-700/60 rounded-2xl px-4 py-3 text-sm text-white flex items-center justify-between font-semibold shadow-inner select-none">
-                    <div className="flex items-center gap-2.5">
-                      <ArrowRight size={14} className="text-amber-400 shrink-0" />
-                      <span>{desiredRole}</span>
+                <div className="space-y-3">
+                  {candidatureHistory.map((cand) => (
+                    <div key={cand.id} className="bg-[#0a0a0f] border border-slate-800/70 rounded-2xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-white">{cand.desiredRole}</span>
+                          {renderHistoryStatusBadge(cand.status)}
+                        </div>
+                        <p className="text-2xs text-slate-400">
+                          Inviata il: {new Date(cand.submittedAt).toLocaleString("it-IT")} 
+                          {cand.reviewedAt ? ` • Valutata il: ${new Date(cand.reviewedAt).toLocaleString("it-IT")}` : ""}
+                        </p>
+                        {cand.rejectionReason && (
+                          <p className="text-2xs text-rose-300 italic pt-0.5">Motivo rifiuto: {cand.rejectionReason}</p>
+                        )}
+                        {cand.cancellationReason && (
+                          <p className="text-2xs text-amber-300 italic pt-0.5">Motivo annullamento: {cand.cancellationReason}</p>
+                        )}
+                      </div>
+                      <span className="text-2xs font-mono text-slate-500">ID: {cand.id}</span>
                     </div>
-                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400/90 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
-                      <Lock size={12} />
-                      Assegnato Automaticamente
+                  ))}
+                </div>
+              </div>
+            )}
+
+          {/* FORM DI COMPILAZIONE NUOVA CANDIDATURA */}
+          <form
+            onSubmit={handleSubmit}
+            className="bg-[#111116] border border-slate-800/90 rounded-3xl p-6 sm:p-8 shadow-2xl backdrop-blur-md space-y-6"
+          >
+            {formError && (
+              <div className="bg-rose-950/80 border border-rose-500/50 rounded-2xl p-4 flex items-center gap-3 text-xs text-rose-200">
+                <AlertCircle size={18} className="text-rose-400 shrink-0" />
+                <span>{formError}</span>
+              </div>
+            )}
+
+            {formSuccess && (
+              <div className="bg-emerald-950/80 border border-emerald-500/50 rounded-2xl p-4 flex items-center gap-3 text-xs text-emerald-200">
+                <CheckCircle2 size={18} className="text-emerald-400 shrink-0" />
+                <span>{formSuccess}</span>
+              </div>
+            )}
+
+            {/* Field 1: Nome e Cognome */}
+            <div className="space-y-2">
+              <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                <User size={14} className="text-red-400" />
+                1. Nome e Cognome <span className="text-rose-400">*</span>
+              </label>
+              <input
+                type="text"
+                required
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                placeholder="Es. Mario Rossi"
+                className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none transition-all"
+              />
+            </div>
+
+            {/* Field 2 & 3: Ruolo Attuale e Ruolo Desiderato */}
+            <div className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Field 2: Ruolo Attuale */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                      <Shield size={14} className="text-amber-400" />
+                      2. Ruolo Attuale <span className="text-rose-400">*</span>
+                    </label>
+                    {/* Live Role Badge Preview */}
+                    <span
+                      className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${currentRoleStyle.className}`}
+                      style={currentRoleStyle.style}
+                    >
+                      {currentRole}
                     </span>
                   </div>
+                  <select
+                    value={currentRole}
+                    onChange={(e) => {
+                      const newRole = e.target.value;
+                      setCurrentRole(newRole);
+                      setDesiredRole(getNextPromotionRole(newRole));
+                    }}
+                    className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white outline-none cursor-pointer transition-all font-medium"
+                  >
+                    {CANDIDATURA_CURRENT_ROLES.map((r) => (
+                      <option key={r.name} value={r.name} className="bg-slate-900 text-white font-medium">
+                        {r.name}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-2xs text-slate-500">
+                    Seleziona il grado attualmente ricoperto nel corpo EMS.
+                  </p>
                 </div>
-                <p className="text-2xs text-slate-400">
-                  Grado immediatamente superiore calcolato in automatico in base alla gerarchia.
-                </p>
+
+                {/* Field 3: Ruolo Desiderato (Locked to immediate next superior grade) */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                      <Award size={14} className="text-red-400" />
+                      3. Ruolo Desiderato (Grado Superiore) <span className="text-rose-400">*</span>
+                    </label>
+                    {/* Live Role Badge Preview */}
+                    <span
+                      className={`px-2.5 py-0.5 rounded-md text-xs font-bold ${desiredRoleStyle.className}`}
+                      style={desiredRoleStyle.style}
+                    >
+                      {desiredRole}
+                    </span>
+                  </div>
+                  <div className="relative">
+                    <div className="w-full bg-[#0a0a0f]/80 border border-slate-700/60 rounded-2xl px-4 py-3 text-sm text-white flex items-center justify-between font-semibold shadow-inner select-none">
+                      <div className="flex items-center gap-2.5">
+                        <ArrowRight size={14} className="text-amber-400 shrink-0" />
+                        <span>{desiredRole}</span>
+                      </div>
+                      <span className="inline-flex items-center gap-1 text-[11px] font-bold text-amber-400/90 bg-amber-500/10 border border-amber-500/30 px-2.5 py-1 rounded-lg">
+                        <Lock size={12} />
+                        Assegnato Automaticamente
+                      </span>
+                    </div>
+                  </div>
+                  <p className="text-2xs text-slate-400">
+                    Grado immediatamente superiore calcolato in automatico in base alla gerarchia.
+                  </p>
+                </div>
+              </div>
+
+              {/* Explanatory Notice: Double promotion is exclusively managed by CDA */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/60 border border-indigo-500/30 flex items-start gap-3.5 text-xs text-indigo-200 shadow-md">
+                <div className="p-2 bg-indigo-500/15 rounded-xl text-indigo-400 shrink-0 border border-indigo-500/30 mt-0.5">
+                  <Info size={18} />
+                </div>
+                <div className="space-y-1">
+                  <h4 className="font-bold text-indigo-100 flex items-center gap-1.5 text-xs uppercase tracking-wide">
+                    <span>Regola di Avanzamento Ordinario & Doppia Promozione</span>
+                  </h4>
+                  <p className="text-slate-300 text-xs leading-relaxed">
+                    Il modulo assegna in automatico lo scatto al <strong>grado immediatamente superiore</strong>.
+                    Qualora si desideri richiedere una <strong>doppia promozione di ruolo</strong> (salto straordinario di grado), tale decisione non può essere richiesta tramite candidatura ordinaria ed è di <strong>competenza e responsabilità esclusiva del Consiglio di Amministrazione (CDA)</strong>.
+                  </p>
+                </div>
               </div>
             </div>
 
-            {/* Explanatory Notice: Double promotion is exclusively managed by CDA */}
-            <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/60 border border-indigo-500/30 flex items-start gap-3.5 text-xs text-indigo-200 shadow-md">
-              <div className="p-2 bg-indigo-500/15 rounded-xl text-indigo-400 shrink-0 border border-indigo-500/30 mt-0.5">
-                <Info size={18} />
-              </div>
-              <div className="space-y-1">
-                <h4 className="font-bold text-indigo-100 flex items-center gap-1.5 text-xs uppercase tracking-wide">
-                  <span>Regola di Avanzamento Ordinario & Doppia Promozione</span>
-                </h4>
-                <p className="text-slate-300 text-xs leading-relaxed">
-                  Il modulo assegna in automatico lo scatto al <strong>grado immediatamente superiore</strong>.
-                  Qualora si desideri richiedere una <strong>doppia promozione di ruolo</strong> (salto straordinario di grado), tale decisione non può essere richiesta tramite candidatura ordinaria ed è di <strong>competenza e responsabilità esclusiva del Consiglio di Amministrazione (CDA)</strong>.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Field 4: Fascia Oraria */}
-          <div className="space-y-2">
-            <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-              <Clock size={14} className="text-cyan-400" />
-              4. Fascia Oraria Lavorativa <span className="text-rose-400">*</span>
-            </label>
-            <input
-              type="text"
-              required
-              value={timeSlot}
-              onChange={(e) => setTimeSlot(e.target.value)}
-              placeholder="Es. Lunedì-Venerdì dalle 15:00 alle 22:00, Sabato disponibile"
-              className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none transition-all"
-            />
-            <p className="text-2xs text-slate-500">
-              Scrivi manualmente i tuoi orari e giorni abituali di presenza.
-            </p>
-          </div>
-
-          {/* Field 5: Cosa Offrono (Minimo 5 righe) */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
+            {/* Field 4: Fascia Oraria */}
+            <div className="space-y-2">
               <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
-                <HeartHandshake size={14} className="text-rose-400" />
-                5. Cosa Offri come Persona / Dipendente <span className="text-rose-400">*</span>
+                <Clock size={14} className="text-cyan-400" />
+                4. Fascia Oraria Lavorativa <span className="text-rose-400">*</span>
               </label>
-              <span
-                className={`text-2xs font-bold px-2.5 py-0.5 rounded-full border ${
-                  isLineCountValid
-                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                    : "bg-rose-500/10 text-rose-400 border-rose-500/30"
-                }`}
-              >
-                Righe valide: {validLinesCount} / 5 minime
-              </span>
+              <input
+                type="text"
+                required
+                value={timeSlot}
+                onChange={(e) => setTimeSlot(e.target.value)}
+                placeholder="Es. Lunedì-Venerdì dalle 15:00 alle 22:00, Sabato disponibile"
+                className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl px-4 py-3 text-sm text-white placeholder-slate-600 outline-none transition-all"
+              />
+              <p className="text-2xs text-slate-500">
+                Scrivi manualmente i tuoi orari e giorni abituali di presenza.
+              </p>
             </div>
-            <textarea
-              required
-              rows={7}
-              value={offerText}
-              onChange={(e) => setOfferText(e.target.value)}
-              placeholder="Scrivi qui la tua presentazione dettagliata (minimo 5 righe)...&#10;1. Esperienze e qualifiche nel corpo EMS&#10;2. Punti di forza personali ed etica professionale&#10;3. Obiettivi e contributi previsti per il reparto&#10;4. Disponibilità all'affiancamento dei colleghi&#10;5. Motivazione personale per la promozione"
-              className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl p-4 text-sm text-white placeholder-slate-600 outline-none transition-all leading-relaxed font-sans"
-            />
-            <p className="text-2xs text-slate-500">
-              È richiesto un testo articolato di almeno 5 righe per consentire un'adeguata valutazione da parte dei dirigenti.
-            </p>
-          </div>
 
-          {/* Submit Button */}
-          <button
-            type="submit"
-            disabled={isSubmitting || !isLineCountValid}
-            className={`w-full py-4 rounded-2xl font-bold text-sm uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 shadow-xl active:scale-98 ${
-              isLineCountValid && !isSubmitting
-                ? "bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white shadow-red-950/50"
-                : "bg-slate-800/80 text-slate-500 border border-slate-700/60 cursor-not-allowed"
-            }`}
-          >
-            {isSubmitting ? (
-              <>
-                <Loader2 size={18} className="animate-spin text-white" />
-                Invio in corso...
-              </>
-            ) : (
-              <>
-                <Send size={18} /> Invia Candidatura Formale
-              </>
-            )}
-          </button>
-        </form>
+            {/* Field 5: Cosa Offrono (Minimo 5 righe) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-2">
+                  <HeartHandshake size={14} className="text-rose-400" />
+                  5. Cosa Offri come Persona / Dipendente <span className="text-rose-400">*</span>
+                </label>
+                <span
+                  className={`text-2xs font-bold px-2.5 py-0.5 rounded-full border ${
+                    isLineCountValid
+                      ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                      : "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                  }`}
+                >
+                  Righe valide: {validLinesCount} / 5 minime
+                </span>
+              </div>
+              <textarea
+                required
+                rows={7}
+                value={offerText}
+                onChange={(e) => setOfferText(e.target.value)}
+                placeholder="Scrivi qui la tua presentazione dettagliata (minimo 5 righe)...&#10;1. Esperienze e qualifiche nel corpo EMS&#10;2. Punti di forza personali ed etica professionale&#10;3. Obiettivi e contributi previsti per il reparto&#10;4. Disponibilità all'affiancamento dei colleghi&#10;5. Motivazione personale per la promozione"
+                className="w-full bg-[#0a0a0f] border border-slate-800 focus:border-red-500 focus:ring-1 focus:ring-red-500 rounded-2xl p-4 text-sm text-white placeholder-slate-600 outline-none transition-all leading-relaxed font-sans"
+              />
+              <p className="text-2xs text-slate-500">
+                È richiesto un testo articolato di almeno 5 righe per consentire un'adeguata valutazione da parte dei dirigenti.
+              </p>
+            </div>
+
+            {/* Submit Button */}
+            <button
+              type="submit"
+              disabled={isSubmitting || !isLineCountValid}
+              className={`w-full py-4 rounded-2xl font-bold text-sm uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-2 shadow-xl active:scale-98 ${
+                isLineCountValid && !isSubmitting
+                  ? "bg-gradient-to-r from-red-600 via-rose-600 to-red-600 hover:from-red-500 hover:to-rose-500 text-white shadow-red-950/50"
+                  : "bg-slate-800/80 text-slate-500 border border-slate-700/60 cursor-not-allowed"
+              }`}
+            >
+              {isSubmitting ? (
+                <>
+                  <Loader2 size={18} className="animate-spin text-white" />
+                  Invio in corso...
+                </>
+              ) : (
+                <>
+                  <Send size={18} /> Invia Candidatura Formale
+                </>
+              )}
+            </button>
+          </form>
+        </div>
       )}
 
       {/* --- MODAL ANNULLAMENTO CANDIDATURA --- */}
