@@ -38,30 +38,6 @@
     "username": "Franco Stanco"
   },
   {
-    "candidateId": "55ed4d13991bfdb1",
-    "username": "Jolyne Kujo",
-    "revokedAt": "2026-07-29T15:57:53.884Z",
-    "token": "EMS-JK1929"
-  },
-  {
-    "candidateId": "55ed4d13991bfdb1",
-    "token": "EMS-JK1F9A",
-    "revokedAt": "2026-07-29T15:57:56.811Z",
-    "username": "Jolyne Kujo"
-  },
-  {
-    "token": "EMS-JK789D",
-    "candidateId": "55ed4d13991bfdb1",
-    "revokedAt": "2026-07-29T15:58:07.438Z",
-    "username": "Jolyne Kujo"
-  },
-  {
-    "token": "EMS-JKCAFA",
-    "candidateId": "55ed4d13991bfdb1",
-    "username": "Jolyne Kujo",
-    "revokedAt": "2026-07-29T15:58:04.953Z"
-  },
-  {
     "token": "EMS-LW4203",
     "username": "Linn Walker",
     "revokedAt": "2026-08-02T20:48:21.370Z",
@@ -196,14 +172,6 @@
   },
   {
     "roleName": "Supervisore",
-    "gradeName": "Supervisore",
-    "username": "Jolyne Kujo",
-    "token": "EMS-JK5090",
-    "candidateId": "55ed4d13991bfdb1",
-    "revokedAt": "2026-08-22T14:40:47.793Z"
-  },
-  {
-    "roleName": "Supervisore",
     "token": "EMS-T255A",
     "gradeName": "Supervisore",
     "username": "Taranto",
@@ -217,39 +185,6 @@
     "gradeName": "V. Primario di Reparto",
     "candidateId": "76258bb88796bf08",
     "roleName": "V. Primario di Reparto"
-  },
-  {
-    "token": "EMS-JK58DF",
-    "candidateId": "55ed4d13991bfdb1",
-    "gradeName": "Supervisore Generale",
-    "roleName": "Supervisore Generale",
-    "revokedAt": "2026-08-24T20:47:18.392Z",
-    "username": "Jolyne Kujo",
-    "hasCdaAccess": false
-  },
-  {
-    "username": "Mimmo Diesel",
-    "candidateId": "ef0543d7960b4ff8",
-    "gradeName": "Assistente Supervisore",
-    "hasCdaAccess": false,
-    "roleName": "Assistente Supervisore",
-    "revokedAt": "2026-08-24T22:28:50.680Z",
-    "token": "EMS-MD5D0E"
-  },
-  {
-    "roleName": "Aspettativa",
-    "revokedAt": "2026-08-23T09:06:40.626Z",
-    "username": "Mimmo Diesel",
-    "token": "EMS-MD32",
-    "gradeName": "Aspettativa"
-  },
-  {
-    "token": "EMS-MD442C",
-    "revokedAt": "2026-08-22T14:41:06.255Z",
-    "roleName": "Responsabile Del Presidio",
-    "username": "Mimmo Diesel",
-    "candidateId": "ef0543d7960b4ff8",
-    "gradeName": "Responsabile Del Presidio"
   },
   {
     "token": "EMS-LR37DF",
@@ -266,5 +201,14 @@
     "gradeName": "V. Primario di Reparto",
     "hasCdaAccess": false,
     "revokedAt": "2026-08-30T20:43:06.801Z"
+  },
+  {
+    "token": "EMS-MD442C",
+    "candidateId": "ef0543d7960b4ff8",
+    "username": "Mimmo Diesel",
+    "roleName": "Volontario",
+    "gradeName": "Volontario",
+    "hasCdaAccess": false,
+    "revokedAt": "2026-09-01T08:29:25.527Z"
   }
 ]

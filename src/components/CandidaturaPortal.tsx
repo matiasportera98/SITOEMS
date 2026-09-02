@@ -292,12 +292,18 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               <button
                 onClick={fetchMyStatus}
                 className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300 bg-red-950/30 border border-red-800/40 px-3 py-1.5 rounded-xl cursor-pointer transition-all active:scale-95 font-semibold"
               >
                 <RefreshCw size={12} /> Aggiorna Stato
+              </button>
+              <button
+                onClick={handleResetNewApplication}
+                className="flex items-center gap-1.5 text-xs text-slate-300 hover:text-white bg-slate-800 border border-slate-700 px-3 py-1.5 rounded-xl cursor-pointer transition-all active:scale-95 font-semibold shadow-sm"
+              >
+                <Send size={12} /> Nuova Candidatura
               </button>
               <button
                 onClick={() => {
@@ -661,7 +667,7 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
                   <span>Regola di Avanzamento Ordinario & Doppia Promozione</span>
                 </h4>
                 <p className="text-slate-300 text-xs leading-relaxed">
-                  Il modulo assegna in automatico lo scatto al <strong>grado immediatamente superiore</strong>. 
+                  Il modulo assegna in automatico lo scatto al <strong>grado immediatamente superiore</strong>.
                   Qualora si desideri richiedere una <strong>doppia promozione di ruolo</strong> (salto straordinario di grado), tale decisione non può essere richiesta tramite candidatura ordinaria ed è di <strong>competenza e responsabilità esclusiva del Consiglio di Amministrazione (CDA)</strong>.
                 </p>
               </div>
@@ -832,3 +838,4 @@ export default function CandidaturaPortal({ discordSession }: CandidaturaPortalP
     </div>
   );
 }
+
